@@ -1,0 +1,113 @@
+<section id="textbox_${id}" class="capa_inputtype cminput">
+<div class="script_placeholder" data-src="${matlab_editor_js}"></div>
+<textarea 
+  rows="${rows}" 
+  cols="${cols}" 
+  name="input_${id}" 
+  aria-describedby="answer_${id}" 
+  id="input_${id}"
+  data-tabsize="${tabsize}"
+  data-mode="octave"
+  % if linenumbers:
+  data-linenums="true"
+  % endif
+ % if hidden:
+  style="display:none;"
+ % endif
+  >${value|h}</textarea>
+
+  <div class="grader-status" tabindex="-1">
+      <span id="status_${id}"
+            class="${status_class}"
+            aria-describedby="input_${id}"
+      >
+          <span class="status sr">${status_display}</span>
+      </span>
+    % if status == 'queued':
+      <span style="display:none;" class="xqueue" id="${id}">${queue_len}</span>
+    % endif
+
+    % if hidden:
+      <div style="display:none;" name="${hidden}" inputid="input_${id}" />
+    % endif
+
+    <p class="debug">${status_display}</p>
+  </div>
+
+  <span id="answer_${id}"></span>
+
+  <div class="external-grader-message" aria-live="polite">
+    ${msg|n}
+  </div>
+  <div class="external-grader-message" aria-live="polite">
+    ${queue_msg|n}
+  </div>
+
+  % if button_enabled:
+  <div class="plot-button">
+      <input type="button" class="save" name="plot-button" id="plot_${id}" value="Run Code" />
+  </div>
+  %endif
+
+  <script>
+    $(function(){
+      var gentle_alert = function (parent_elt, msg) {
+          if($(parent_elt).find('.capa_alert').length) {
+              $(parent_elt).find('.capa_alert').remove();
+          }
+          var alert_elem = "<div>" + msg + "</div>";
+          alert_elem = $(alert_elem).addClass('capa_alert');
+          $(parent_elt).find('.action').after(alert_elem);
+          $(parent_elt).find('.capa_alert').css({opacity: 0}).animate({opacity: 1}, 700);
+      }
+
+
+      // hook up the plot button
+      var plot = function(event) {
+          var problem_elt = $(event.target).closest('.problems-wrapper');
+          url = $(event.target).closest('.problems-wrapper').data('url');
+          input_id = "${id}";
+
+          // save the codemirror text to the textarea
+          // since there could be multiple codemirror instances on the page,
+          // save all of them.
+          $('.CodeMirror').each(function(i, el){
+            el.CodeMirror.save();
+          });
+          var input = $("#input_${id}");
+
+          // pull out the coded text
+          submission = input.val();
+
+          answer = input.serialize();
+
+          // setup callback for after we send information to plot
+          var plot_callback = function(response) {
+              if(response.success) {
+                  window.location.reload();
+              }
+              else {
+                  gentle_alert(problem_elt, response.message);
+              }
+          }
+
+          var save_callback = function(response) {
+                  if(response.success) {
+                      // send information to the problem's plot functionality
+                      Problem.inputAjax(url, input_id, 'plot',
+                        {'submission': submission}, plot_callback);
+                  }
+                  else {
+                      gentle_alert(problem_elt, response.message);
+                  }
+          }
+
+          // save the answer
+          $.postWithPrefix(url + '/problem_save', answer, save_callback);
+
+      }
+      $('#plot_${id}').click(plot);
+
+    });
+  </script>
+</section>

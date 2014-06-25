@@ -1,0 +1,38 @@
+<span>
+  <div class="script_placeholder" data-src="${setup_script}"/>
+  <input type="hidden"
+    class="schematic"
+    height="${height}"
+    width="${width}"
+    parts="${parts}"
+    analyses="${analyses}"
+    name="input_${id}"
+    id="input_${id}"
+    aria-label="${label}"
+    aria-describedby="answer_${id}"
+    value="${value|h}"
+    initial_value="${initial_value|h}"
+    submit_analyses="${submit_analyses|h}"
+    />
+
+  <span id="answer_${id}"></span>
+  % if status == 'unsubmitted':
+  <span class="ui-icon ui-icon-bullet" style="display:inline-block;" id="status_${id}" aria-describedby="input_${id}">
+    <span class="sr">Status: unsubmitted</span>
+  </span>
+  % elif status == 'correct':
+  <span class="ui-icon ui-icon-check" style="display:inline-block;" id="status_${id}" aria-describedby="input_${id}">
+    <span class="sr">Status: correct</span>
+  </span>
+  % elif status == 'incorrect':
+  <span class="ui-icon ui-icon-close" style="display:inline-block;" id="status_${id}" aria-describedby="input_${id}">
+    <span class="sr">Status: incorrect</span>
+  </span>
+  % elif status == 'incomplete':
+  <span class="ui-icon ui-icon-close" style="display:inline-block;" id="status_${id}" aria-describedby="input_${id}">
+    <span class="sr">Status: incomplete</span>
+  </span>
+  % endif
+
+</span>
+

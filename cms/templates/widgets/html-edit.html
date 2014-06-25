@@ -1,0 +1,10 @@
+<%! from django.utils.translation import ugettext as _ %>
+
+<div class="wrapper-comp-editor" id="editor-tab" data-base-asset-url="${base_asset_url}">
+    <section class="html-editor editor">
+      <div class="row">
+        <textarea class="tiny-mce">${data | h}</textarea>
+      </div>
+    </section>
+</div>
+<%include file="metadata-edit.html" />

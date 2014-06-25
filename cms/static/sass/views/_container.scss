@@ -1,0 +1,201 @@
+// studio - views - container
+// ==========================
+// The container view renders xblocks three levels deep: Page Level, Nesting Level, and Element Level.
+
+// For containers rendered at the element level, the container is rendered in a way that allows the user to navigate to a separate container page for that container making its children populate the nesting and element levels.
+
+// ====================
+
+// UI: container page view
+body.view-container {
+
+  .mast {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  .wrapper-mast .mast.has-navigation .nav-actions {
+    bottom: -($baseline*.75);
+
+    .nav-item .button {
+
+    }
+  }
+
+  .content-primary, .content-supplementary {
+    @include box-sizing(border-box);
+    float: left;
+  }
+
+  .content-primary {
+    margin-right: flex-gutter();
+    width: flex-grid(9,12);
+    box-shadow: none;
+    border: 0;
+
+    .no-container-content {
+      @extend %ui-well;
+      padding: ($baseline*2);
+      background-color: $gray-l4;
+      text-align: center;
+      color: $gray;
+
+      .new-button {
+        @include font-size(14);
+        margin-left: $baseline;
+
+        [class^="icon-"] {
+          margin-right: ($baseline/2);
+        }
+      }
+    }
+  }
+
+  .content-supplementary {
+    width: flex-grid(3,12);
+
+    label {
+      @extend %t-title8;
+    }
+
+    .bit-publishing {
+      margin-bottom: $baseline;
+      border-top: 5px solid $blue;
+      background-color: $white;
+
+      .pub-status {
+        @extend %t-title6;
+        display: block;
+        background-color: $blue-l2;
+        padding: ($baseline/2) ($baseline*.75);
+        font-weight: 600;
+      }
+
+      &.published {
+        border-top: 5px solid $blue;
+
+        .pub-status {
+          background-color: $blue-t0;
+        }
+
+      }
+
+      &.draft {
+        border-top: 5px solid $gray-l1;
+
+        .pub-status {
+          background-color: $gray-l4;
+        }
+      }
+
+      .copy {
+        @extend %t-copy-sub1;
+        padding: ($baseline*.75) ($baseline*.75) ($baseline) ($baseline*.75);
+      }
+    }
+  }
+}
+
+// UI: xblock rendering
+body.view-container  .content-primary {
+
+  .wrapper-xblock {
+    @extend %wrap-xblock;
+
+    // CASE: page level xblock rendering
+    &.level-page {
+      margin: 0;
+
+      .xblock-header {
+        display: none;
+      }
+    }
+
+    // CASE: nesting level xblock rendering
+    &.level-nesting {
+      @include transition(all $tmg-f2 linear 0s);
+      border: none;
+      padding-bottom: $baseline;
+      box-shadow: none;
+
+      &:hover {
+        background-color: $gray-l6;
+        box-shadow: 0 0 1px $shadow-d2 inset;
+      }
+
+      .xblock-header {
+        @include ui-flexbox();
+        margin-bottom: ($baseline/2);
+        border-bottom: none;
+        background: none;
+      }
+
+      .xblock-render {
+        margin: ($baseline/2);
+      }
+
+      // STATE: nesting level xblock is collapsed
+      &.collapsed {
+        padding-bottom: 0;
+        background-color: $gray-l7;
+        box-shadow: 0 0 1px $shadow-d2 inset;
+      }
+    }
+
+    // CASE: element level xblock rendering
+    &.level-element {
+      @include transition(all $tmg-f2 linear 0s);
+      box-shadow: none;
+
+      &:hover {
+        border-color: $blue;
+      }
+
+      .xblock-header {
+        display: flex;
+        margin-bottom: 0;
+        border-bottom: 1px solid $gray-l4;
+        background-color: $gray-l6;
+        font-weight: 300;
+      }
+
+      .xblock-render {
+        margin: ($baseline/2);
+        padding: ($baseline/2);
+      }
+
+      // STATE: xBlock containers styled as rows.
+      &.xblock-type-container {
+
+        .xblock-header {
+          margin-bottom: 0;
+          border-bottom: 0;
+          border-radius: ($baseline/5);
+        }
+
+        .xblock-render {
+          display: none;
+        }
+      }
+    }
+  }
+}
+
+// ====================
+
+// UI: xblocks - internal styling
+
+// In order to ensure visual consistency across the unit and container pages, certain styles need to be applied to render on the container page until they are also cleaned up and applied differently on the unit page.
+.wrapper-xblock {
+
+    // UI: xblocks - internal headings for problems and video components
+    h2 {
+    margin: 30px 40px 30px 0;
+    color: #646464;
+    font-size: 19px;
+    font-weight: 300;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+}
+
