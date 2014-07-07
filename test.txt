@@ -1,4 +1,4 @@
-Wrong line
+Another change on a new branch
 This is the first line
 This is the second line
 
