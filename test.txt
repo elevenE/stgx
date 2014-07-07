@@ -1,5 +1,4 @@
-Another change on a new branch
-This is the first line
+This is the first line, but changed
 This is the second line
 
 This is the third line
