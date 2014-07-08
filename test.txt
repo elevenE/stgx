@@ -6,3 +6,5 @@ A new change for a new branch
 
 Making a change from github
 This is a line from the remove_test_lines branch
+
+THis should create a conflict when I try to push from local
