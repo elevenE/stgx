@@ -2,5 +2,4 @@
 This is the second line
 
 This is the third line
-
-Stash this
+This is a line from the remove_test_lines branch
