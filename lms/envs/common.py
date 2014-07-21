@@ -558,7 +558,7 @@ CMS_BASE = 'localhost:8001'
 # Site info
 SITE_ID = 1
 SITE_NAME = "example.com"
-HTTPS = 'on'
+HTTPS = 'off'
 ROOT_URLCONF = 'lms.urls'
 # NOTE: Please set ALLOWED_HOSTS to some sane value, as we do not allow the default '*'
 
@@ -1362,9 +1362,9 @@ REGISTRATION_EXTRA_FIELDS = {
     'level_of_education': 'optional',
     'gender': 'optional',
     'year_of_birth': 'optional',
-    'mailing_address': 'optional',
-    'goals': 'optional',
-    'honor_code': 'required',
+    'mailing_address': 'hidden',
+    'goals': 'hidden',
+    'honor_code': 'hidden',
     'city': 'hidden',
     'country': 'hidden',
 }
@@ -1413,7 +1413,7 @@ LINKEDIN_API = {
 ORA2_FILE_PREFIX = None
 
 # Default File Upload Storage bucket and prefix. Used by the FileUpload Service.
-FILE_UPLOAD_STORAGE_BUCKET_NAME = 'edxuploads'
+FILE_UPLOAD_STORAGE_BUCKET_NAME = 'sgu_uploads'
 FILE_UPLOAD_STORAGE_PREFIX = 'submissions_attachments'
 
 ##### ACCOUNT LOCKOUT DEFAULT PARAMETERS #####
@@ -1649,3 +1649,5 @@ THIRD_PARTY_AUTH = {}
 ### ADVANCED_SECURITY_CONFIG
 # Empty by default
 ADVANCED_SECURITY_CONFIG = {}
+
+
