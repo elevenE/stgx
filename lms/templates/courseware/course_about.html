@@ -32,6 +32,7 @@
   ## (https://developers.facebook.com/docs/opengraph/howtos/maximizing-distribution-media-content#tags)
   <meta property="og:title" content="${get_course_about_section(course, 'title')}" />
   <meta property="og:description" content="${get_course_about_section(course, 'short_description')}" />
+  <meta property="og:image" content="http://www.sgu.edu/images/one-health-one-medicine.jpg" / >
 </%block>
 
 <%block name="js_extra">
@@ -122,7 +123,7 @@
 <%block name="pagetitle">${_("About {course.display_number_with_default}").format(course=course) | h}</%block>
 
 <section class="course-info">
-  <header class="course-profile">
+  <header class="course-profile"> 
     <div class="intro-inner-wrapper">
       <div class="table">
       <section class="intro">

@@ -277,11 +277,11 @@ ROOT_URLCONF = 'cms.urls'
 
 # Email
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-EMAIL_HOST = 'localhost'
+EMAIL_HOST = 'email-smtp.us-east-1.amazonaws.com'
 EMAIL_PORT = 25
-EMAIL_USE_TLS = False
-EMAIL_HOST_USER = ''
-EMAIL_HOST_PASSWORD = ''
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'AKIAI6TRTB2K2MG3AFDQ'
+EMAIL_HOST_PASSWORD = 'Ak3AmaMHcbZ8YaP4enG79DaYC9593iF/bIE7MTTOEGaq'
 DEFAULT_FROM_EMAIL = 'registration@example.com'
 DEFAULT_FEEDBACK_EMAIL = 'feedback@example.com'
 SERVER_EMAIL = 'devops@example.com'

@@ -235,7 +235,7 @@
 <br>
 <br>
   <b>Our mailing address is:</b><br>
-  edX<br>
+  edX plain-html<br>
   11 Cambridge Center, Suite 101<br>
   Cambridge, MA, USA 02142<br>
 <br>
