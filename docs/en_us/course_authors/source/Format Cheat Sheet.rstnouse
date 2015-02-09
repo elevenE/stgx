@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ##################
 Format cheat sheet
 ##################
@@ -24,6 +25,35 @@ Heading 5
 ************
 Image Format
 ************
+=======
+******************
+Format cheat sheet
+******************
+
+Levels of Subheads
+
+####
+text
+####
+
+****
+text
+****
+
+text
+****
+
+text
+====
+
+text
+^^^^
+
+
+
+
+
+>>>>>>> 31132e6a11f06784b18fc645928840b0c52a79d5
 
 Image format, uses images as a reference from the soure/image file
 
@@ -33,9 +63,16 @@ Image format, uses images as a reference from the soure/image file
        .. image:: images/image009.png
        :width: 800  
 
+<<<<<<< HEAD
 ****************
 Code Formatting
 ****************
+=======
+
+For references to edX1010 pages:
+
+        `Writing Exercises <https://edge.edx.org/courses/edX/edX101/How_to_Create_an_edX_Course/courseware/a45de3baa8a9468cbfb1a301fdcd7e86/d15cfeaff0af4dd7be4765cd0988d172/1>`_ has more in-depth discussion about problem types, and some general pedagogical considerations for adapting to the online format and a `Gallery of Response Types <https://edge.edx.org/accounts/login?next=/courses/edX/edX101/How_to_Create_an_edX_Course/courseware/a45de3baa8a9468cbfb1a301fdcd7e86/3ba055e760d04f389150a75edfecb844/1>`_
+>>>>>>> 31132e6a11f06784b18fc645928840b0c52a79d5
 
 To set text in a "Code format"
         ::
@@ -45,6 +82,7 @@ To set text in a "Code format"
 
 (text in code-block:: xml is in different colors)
 
+<<<<<<< HEAD
 ****************
 Table Formatting
 ****************
@@ -91,6 +129,8 @@ For references to edX101 pages:
 
         `Writing Exercises <https://edge.edx.org/courses/edX/edX101/How_to_Create_an_edX_Course/courseware/a45de3baa8a9468cbfb1a301fdcd7e86/d15cfeaff0af4dd7be4765cd0988d172/1>`_ has more in-depth discussion about problem types, and some general pedagogical considerations for adapting to the online format and a `Gallery of Response Types <https://edge.edx.org/accounts/login?next=/courses/edX/edX101/How_to_Create_an_edX_Course/courseware/a45de3baa8a9468cbfb1a301fdcd7e86/3ba055e760d04f389150a75edfecb844/1>`_
 
+=======
+>>>>>>> 31132e6a11f06784b18fc645928840b0c52a79d5
 To cross reference between sections of a document
 
 At the paragraph you are cross referencing:
@@ -101,16 +141,20 @@ To make the cross reference in text:
 
         see :ref:`Set Grade Brackets<Set-Grade-Brackets>`
 
+<<<<<<< HEAD
 To cross-reference a topic, but use your own text instead of the topic title, use the :ref: directive, but enter your own text followed by the topic anchor in angle brackets:
 
         If you want to add a graded tool or exercise, add the tool as a :ref:`custom JavaScript problem<Custom JavaScript>` or an :ref:`LTI component<LTI Component>`.
 
         (In this sentence, the text appears as "custom JavaScript problem" and "LTI component", and the linked-to topic titles are "Custom JavaScript Problem" and "LTI Component".)
 
+=======
+>>>>>>> 31132e6a11f06784b18fc645928840b0c52a79d5
 External page reference
 
         see `Create a Problem <http://site.Create_Problem.html>`_ 
 
+<<<<<<< HEAD
       
 *******
 Tables
@@ -144,3 +188,6 @@ Example of a table with a cell that includes a bulleted list. The balnk lines be
    * - ``max_grade``
      - integer
      - Maximum possible grade value.
+=======
+      
+>>>>>>> 31132e6a11f06784b18fc645928840b0c52a79d5
