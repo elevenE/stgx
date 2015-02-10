@@ -41,8 +41,14 @@ from lms.lib.xblock.mixin import LmsBlockMixin
 # The display name of the platform to be used in templates/emails/etc.
 PLATFORM_NAME = "Your Platform Name Here"
 CC_MERCHANT_NAME = PLATFORM_NAME
-PLATFORM_TWITTER_ACCOUNT = "@YourPlatformTwitterAccount"
+
 PLATFORM_FACEBOOK_ACCOUNT = "http://www.facebook.com/YourPlatformFacebookAccount"
+PLATFORM_TWITTER_ACCOUNT = "@YourPlatformTwitterAccount"
+PLATFORM_TWITTER_URL = "https://twitter.com/YourPlatformTwitterAccount"
+PLATFORM_MEETUP_URL = "http://www.meetup.com/YourMeetup"
+PLATFORM_LINKEDIN_URL = "http://www.linkedin.com/company/YourPlatform"
+PLATFORM_GOOGLE_PLUS_URL = "https://plus.google.com/YourGooglePlusAccount/"
+
 
 COURSEWARE_ENABLED = True
 ENABLE_JASMINE = False
@@ -148,7 +154,7 @@ FEATURES = {
     # Staff Debug tool.
     'ENABLE_STUDENT_HISTORY_VIEW': True,
 
-    # segment.io for LMS--need to explicitly turn it on for production.
+    # Segment.io for LMS--need to explicitly turn it on for production.
     'SEGMENT_IO_LMS': False,
 
     # Provide a UI to allow users to submit feedback from the LMS (left-hand help modal)
@@ -259,7 +265,24 @@ FEATURES = {
     # Show a "Download your certificate" on the Progress page if the lowest
     # nonzero grade cutoff is met
     'SHOW_PROGRESS_SUCCESS_BUTTON': False,
+
+    # Analytics Data API (for active student count)
+    # Default to false here b/c dev environments won't have the api, will override in aws.py
+    'ENABLE_ANALYTICS_ACTIVE_COUNT': False,
+
+    # TODO: ECOM-136 remove this feature flag when new styles are available on main site.for
+    # Enable the new edX footer to be rendered. Defaults to false.
+    'ENABLE_NEW_EDX_FOOTER': False,
+
+    # TODO: ECOM-136
+    # Enables the new navigation template and styles. This should be enabled
+    # when the styles appropriately match the edX.org website.
+    'ENABLE_NEW_EDX_HEADER': False,
+
 }
+
+# Ignore static asset files on import which match this pattern
+ASSET_IGNORE_REGEX = r"(^\._.*$)|(^\.DS_Store$)|(^.*~$)"
 
 # Used for A/B testing
 DEFAULT_GROUPS = []
@@ -299,7 +322,7 @@ NODE_PATH = ':'.join(node_paths)
 
 # For geolocation ip database
 GEOIP_PATH = REPO_ROOT / "common/static/data/geoip/GeoIP.dat"
-
+GEOIPV6_PATH = REPO_ROOT / "common/static/data/geoip/GeoIPv6.dat"
 
 # Where to look for a status message
 STATUS_MESSAGE_PATH = ENV_ROOT / "status_message.json"
@@ -310,8 +333,8 @@ OPENID_PROVIDER_TRUSTED_ROOTS = ['cs50.net', '*.cs50.net']
 ################################## EDX WEB #####################################
 # This is where we stick our compiled template files. Most of the app uses Mako
 # templates
-from tempdir import mkdtemp_clean
-MAKO_MODULE_DIR = mkdtemp_clean('mako')
+import tempfile
+MAKO_MODULE_DIR = os.path.join(tempfile.gettempdir(), 'mako_lms')
 MAKO_TEMPLATES = {}
 MAKO_TEMPLATES['main'] = [PROJECT_ROOT / 'templates',
                           COMMON_ROOT / 'templates',
@@ -343,6 +366,12 @@ TEMPLATE_CONTEXT_PROCESSORS = (
 
     # Hack to get required link URLs to password reset templates
     'edxmako.shortcuts.marketing_link_context_processor',
+
+    # Allows the open edX footer to be leveraged in Django Templates.
+    'edxmako.shortcuts.open_source_footer_context_processor',
+
+    # TODO: Used for header and footer feature flags. Remove as part of ECOM-136
+    'edxmako.shortcuts.header_footer_context_processor',
 
     # Shoppingcart processor (detects if request.user has a cart)
     'shoppingcart.context_processor.user_has_cart_context_processor',
@@ -402,8 +431,12 @@ LMS_MIGRATION_ALLOWED_IPS = []
 
 # These are standard regexes for pulling out info like course_ids, usage_ids, etc.
 # They are used so that URLs with deprecated-format strings still work.
-COURSE_ID_PATTERN = r'(?P<course_id>(?:[^/]+/[^/]+/[^/]+)|(?:[^/]+))'
-COURSE_KEY_PATTERN = r'(?P<course_key_string>(?:[^/]+/[^/]+/[^/]+)|(?:[^/]+))'
+# Note: these intentionally greedily grab all chars up to the next slash including any pluses
+# DHM: I really wanted to ensure the separators were the same (+ or /) but all patts I tried had
+# too many inadvertent side effects :-(
+COURSE_KEY_PATTERN = r'(?P<course_key_string>[^/+]+(/|\+)[^/+]+(/|\+)[^/]+)'
+COURSE_ID_PATTERN = COURSE_KEY_PATTERN.replace('course_key_string', 'course_id')
+
 USAGE_KEY_PATTERN = r'(?P<usage_key_string>(?:i4x://?[^/]+/[^/]+/[^/]+/[^@]+(?:@[^/]+)?)|(?:[^/]+))'
 ASSET_KEY_PATTERN = r'(?P<asset_key_string>(?:/?c4x(:/)?/[^/]+/[^/]+/[^/]+/[^@]+(?:@[^/]+)?)|(?:[^/]+))'
 USAGE_ID_PATTERN = r'(?P<usage_id>(?:i4x://?[^/]+/[^/]+/[^/]+/[^@]+(?:@[^/]+)?)|(?:[^/]+))'
@@ -463,6 +496,9 @@ if FEATURES.get('ENABLE_SQL_TRACKING_LOGS'):
 GOOGLE_ANALYTICS_ACCOUNT = None
 GOOGLE_ANALYTICS_LINKEDIN = 'GOOGLE_ANALYTICS_LINKEDIN_DUMMY'
 
+######################## OPTIMIZELY ###########################
+OPTIMIZELY_PROJECT_ID = None
+
 ######################## subdomain specific settings ###########################
 COURSE_LISTINGS = {}
 SUBDOMAIN_BRANDING = {}
@@ -496,7 +532,6 @@ MODULESTORE = {
         'ENGINE': 'xmodule.modulestore.mixed.MixedModuleStore',
         'OPTIONS': {
             'mappings': {},
-            'reference_type': 'Location',
             'stores': [
                 {
                     'NAME': 'draft',
@@ -514,6 +549,16 @@ MODULESTORE = {
                     'OPTIONS': {
                         'data_dir': DATA_DIR,
                         'default_class': 'xmodule.hidden_module.HiddenDescriptor',
+                    }
+                },
+                {
+                    'NAME': 'split',
+                    'ENGINE': 'xmodule.modulestore.split_mongo.split_draft.DraftVersioningModuleStore',
+                    'DOC_STORE_CONFIG': DOC_STORE_CONFIG,
+                    'OPTIONS': {
+                        'default_class': 'xmodule.hidden_module.HiddenDescriptor',
+                        'fs_root': DATA_DIR,
+                        'render_template': 'edxmako.shortcuts.render_to_string',
                     }
                 },
             ]
@@ -611,6 +656,7 @@ LANGUAGES = (
     ('da', u'dansk'),  # Danish
     ('de-de', u'Deutsch (Deutschland)'),  # German (Germany)
     ('el', u'Ελληνικά'),  # Greek
+    ('en-uk', u'English (United Kingdom)'),  # English (United Kingdom)
     ('en@lolcat', u'LOLCAT English'),  # LOLCAT English
     ('en@pirate', u'Pirate English'),  # Pirate English
     ('es-419', u'Español (Latinoamérica)'),  # Spanish (Latin America)
@@ -657,6 +703,7 @@ LANGUAGES = (
     ('si', u'සිංහල'),  # Sinhala
     ('sk', u'Slovenčina'),  # Slovak
     ('sl', u'Slovenščina'),  # Slovenian
+    ('sq', u'shqip'),  # Albanian
     ('sr', u'Српски'),  # Serbian
     ('ta', u'தமிழ்'),  # Tamil
     ('te', u'తెలుగు'),  # Telugu
@@ -731,7 +778,10 @@ EMBARGO_SITE_REDIRECT_URL = None
 
 ##### shoppingcart Payment #####
 PAYMENT_SUPPORT_EMAIL = 'payment@example.com'
+
 ##### Using cybersource by default #####
+
+CC_PROCESSOR_NAME = 'CyberSource'
 CC_PROCESSOR = {
     'CyberSource': {
         'SHARED_SECRET': '',
@@ -739,8 +789,15 @@ CC_PROCESSOR = {
         'SERIAL_NUMBER': '',
         'ORDERPAGE_VERSION': '7',
         'PURCHASE_ENDPOINT': '',
+    },
+    'CyberSource2': {
+        "PURCHASE_ENDPOINT": '',
+        "SECRET_KEY": '',
+        "ACCESS_KEY": '',
+        "PROFILE_ID": '',
     }
 }
+
 # Setting for PAID_COURSE_REGISTRATION, DOES NOT AFFECT VERIFIED STUDENTS
 PAID_COURSE_REGISTRATION_CURRENCY = ['usd', '$']
 
@@ -898,6 +955,7 @@ main_vendor_js = [
     'js/vendor/ova/tags-annotator.js',
     'js/vendor/ova/flagging-annotator.js',
     'js/vendor/ova/diacritic-annotator.js',
+    'js/vendor/ova/grouping-annotator.js',
     'js/vendor/ova/jquery-Watch.js',
     'js/vendor/ova/openseadragon.js',
     'js/vendor/ova/OpenSeaDragonAnnotation.js',
@@ -920,17 +978,6 @@ PIPELINE_CSS = {
             'css/vendor/jquery.qtip.min.css',
             'css/vendor/responsive-carousel/responsive-carousel.css',
             'css/vendor/responsive-carousel/responsive-carousel.slide.css',
-            'css/vendor/ova/annotator.css',
-            'css/vendor/ova/edx-annotator.css',
-            'css/vendor/ova/video-js.min.css',
-            'css/vendor/ova/rangeslider.css',
-            'css/vendor/ova/share-annotator.css',
-            'css/vendor/ova/richText-annotator.css',
-            'css/vendor/ova/tags-annotator.css',
-            'css/vendor/ova/flagging-annotator.css',
-            'css/vendor/ova/diacritic-annotator.css',
-            'css/vendor/ova/ova.css',
-            'js/vendor/ova/catch/css/main.css'
         ],
         'output_filename': 'css/lms-style-vendor.css',
     },
@@ -980,6 +1027,23 @@ PIPELINE_CSS = {
         ],
         'output_filename': 'css/lms-style-course.css',
     },
+    'style-xmodule-annotations': {
+        'source_filenames': [
+            'css/vendor/ova/annotator.css',
+            'css/vendor/ova/edx-annotator.css',
+            'css/vendor/ova/video-js.min.css',
+            'css/vendor/ova/rangeslider.css',
+            'css/vendor/ova/share-annotator.css',
+            'css/vendor/ova/richText-annotator.css',
+            'css/vendor/ova/tags-annotator.css',
+            'css/vendor/ova/flagging-annotator.css',
+            'css/vendor/ova/diacritic-annotator.css',
+            'css/vendor/ova/grouping-annotator.css',
+            'css/vendor/ova/ova.css',
+            'js/vendor/ova/catch/css/main.css'
+        ],
+        'output_filename': 'css/lms-style-xmodule-annotations.css',
+    },
 }
 
 
@@ -1002,6 +1066,7 @@ PIPELINE_JS = {
             'js/query-params.js',
             'js/src/utility.js',
             'js/src/accessibility_tools.js',
+            'js/src/ie_shim.js',
         ],
         'output_filename': 'js/lms-application.js',
 
@@ -1308,6 +1373,15 @@ INSTALLED_APPS = (
 
     # Monitoring functionality
     'monitoring',
+
+    # Course action state
+    'course_action_state',
+
+    # Additional problem types
+    'edx_jsme',    # Molecular Structure
+
+    # Country list
+    'django_countries'
 )
 
 ######################### MARKETING SITE ###############################
@@ -1323,7 +1397,10 @@ MKTG_URL_LINK_MAP = {
     'HONOR': 'honor',
     'PRIVACY': 'privacy_edx',
     'JOBS': 'jobs',
+    'NEWS': 'news',
     'PRESS': 'press',
+    'BLOG': 'edx-blog',
+    'DONATE': 'donate',
 
     # Verified Certificates
     'WHAT_IS_VERIFIED_CERT': 'verified-certificate',
@@ -1650,4 +1727,29 @@ THIRD_PARTY_AUTH = {}
 # Empty by default
 ADVANCED_SECURITY_CONFIG = {}
 
+### External auth usage -- prefixes for ENROLLMENT_DOMAIN
+SHIBBOLETH_DOMAIN_PREFIX = 'shib:'
+OPENID_DOMAIN_PREFIX = 'openid:'
 
+### Analytics data api settings
+ANALYTICS_DATA_URL = ""
+ANALYTICS_DATA_TOKEN = ""
+ANALYTICS_DASHBOARD_URL = ""
+
+# TODO (ECOM-16): Remove once the A/B test of auto-registration completes
+AUTO_REGISTRATION_AB_TEST_EXCLUDE_COURSES = set([
+    "HarvardX/SW12.2x/1T2014",
+    "HarvardX/SW12.3x/1T2014",
+    "HarvardX/SW12.4x/1T2014",
+    "HarvardX/SW12.5x/2T2014",
+    "HarvardX/SW12.6x/2T2014",
+    "HarvardX/HUM2.1x/3T2014",
+    "HarvardX/SW12x/2013_SOND",
+    "LinuxFoundationX/LFS101x/2T2014",
+    "HarvardX/CS50x/2014_T1",
+    "HarvardX/AmPoX.1/2014_T3",
+    "HarvardX/SW12.7x/3T2014",
+    "HarvardX/SW12.10x/1T2015",
+    "HarvardX/SW12.9x/3T2014",
+    "HarvardX/SW12.8x/3T2014",
+])

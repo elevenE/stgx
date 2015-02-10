@@ -6,6 +6,7 @@ import logging
 import json
 from webob import Response
 from uuid import uuid4
+from operator import itemgetter
 
 from xmodule.progress import Progress
 from xmodule.seq_module import SequenceDescriptor
@@ -23,6 +24,8 @@ log = logging.getLogger('edx.' + __name__)
 
 # Make '_' a no-op so we can scrape strings
 _ = lambda text: text
+
+DEFAULT_GROUP_NAME =  _(u'Group ID {group_id}')
 
 
 class ValidationMessageType(object):
@@ -126,6 +129,7 @@ class SplitTestFields(object):
         help=_("Which child module students in a particular group_id should see"),
         scope=Scope.content
     )
+
 
 @XBlock.needs('user_tags')  # pylint: disable=abstract-method
 @XBlock.wants('partitions')
@@ -232,24 +236,41 @@ class SplitTestModule(SplitTestFields, XModule, StudioEditableModule):
         Render the staff view for a split test module.
         """
         fragment = Fragment()
-        contents = []
+        active_contents = []
+        inactive_contents = []
 
-        for group_id in self.group_id_to_child:
-            child_location = self.group_id_to_child[group_id]
+        for child_location in self.children:  # pylint: disable=no-member
             child_descriptor = self.get_child_descriptor_by_location(child_location)
             child = self.system.get_module(child_descriptor)
             rendered_child = child.render(STUDENT_VIEW, context)
             fragment.add_frag_resources(rendered_child)
+            group_name, updated_group_id = self.get_data_for_vertical(child)
 
-            contents.append({
-                'group_id': group_id,
+            if updated_group_id is None:  # inactive group
+                group_name = child.display_name
+                updated_group_id = [g_id for g_id, loc in self.group_id_to_child.items() if loc == child_location][0]
+                inactive_contents.append({
+                    'group_name': _(u'{group_name} (inactive)').format(group_name=group_name),
+                    'id': child.location.to_deprecated_string(),
+                    'content': rendered_child.content,
+                    'group_id': updated_group_id,
+                })
+                continue
+
+            active_contents.append({
+                'group_name': group_name,
                 'id': child.location.to_deprecated_string(),
-                'content': rendered_child.content
+                'content': rendered_child.content,
+                'group_id': updated_group_id,
             })
+
+        # Sort active and inactive contents by group name.
+        sorted_active_contents = sorted(active_contents, key=itemgetter('group_name'))
+        sorted_inactive_contents = sorted(inactive_contents, key=itemgetter('group_name'))
 
         # Use the new template
         fragment.add_content(self.system.render_template('split_test_staff_view.html', {
-            'items': contents,
+            'items': sorted_active_contents + sorted_inactive_contents,
         }))
         fragment.add_css('.split-test-child { display: none; }')
         fragment.add_javascript_url(self.runtime.local_resource_url(self, 'public/js/split_test_staff.js'))
@@ -266,6 +287,7 @@ class SplitTestModule(SplitTestFields, XModule, StudioEditableModule):
         is_root = root_xblock and root_xblock.location == self.location
         active_groups_preview = None
         inactive_groups_preview = None
+
         if is_root:
             [active_children, inactive_children] = self.descriptor.active_and_inactive_children()
             active_groups_preview = self.studio_render_children(
@@ -281,6 +303,7 @@ class SplitTestModule(SplitTestFields, XModule, StudioEditableModule):
             'is_configured': is_configured,
             'active_groups_preview': active_groups_preview,
             'inactive_groups_preview': inactive_groups_preview,
+            'group_configuration_url': self.descriptor.group_configuration_url,
         }))
         fragment.add_javascript_url(self.runtime.local_resource_url(self, 'public/js/split_test_author_view.js'))
         fragment.initialize_js('SplitTestAuthorView')
@@ -296,8 +319,16 @@ class SplitTestModule(SplitTestFields, XModule, StudioEditableModule):
         for active_child_descriptor in children:
             active_child = self.system.get_module(active_child_descriptor)
             rendered_child = active_child.render(StudioEditableModule.get_preview_view_name(active_child), context)
+            if active_child.category == 'vertical':
+                group_name, group_id  = self.get_data_for_vertical(active_child)
+                if group_name:
+                    rendered_child.content = rendered_child.content.replace(
+                        DEFAULT_GROUP_NAME.format(group_id=group_id),
+                        group_name
+                    )
             fragment.add_frag_resources(rendered_child)
             html = html + rendered_child.content
+
         return html
 
     def student_view(self, context):
@@ -339,6 +370,19 @@ class SplitTestModule(SplitTestFields, XModule, StudioEditableModule):
         progresses = [child.get_progress() for child in children]
         progress = reduce(Progress.add_counts, progresses, None)
         return progress
+
+    def get_data_for_vertical(self, vertical):
+        """
+        Return name and id of a group corresponding to `vertical`.
+        """
+        user_partition = self.descriptor.get_selected_partition()
+        if user_partition:
+            for group in user_partition.groups:
+                group_id = unicode(group.id)
+                child_location = self.group_id_to_child.get(group_id, None)
+                if child_location == vertical.location:
+                    return (group.name, group.id)
+        return (None, None)
 
 
 @XBlock.needs('user_tags')  # pylint: disable=abstract-method
@@ -563,25 +607,60 @@ class SplitTestDescriptor(SplitTestFields, SequenceDescriptor, StudioEditableDes
             self.system.modulestore.update_item(self, None)
         return Response()
 
+    @property
+    def group_configuration_url(self):
+        assert hasattr(self.system, 'modulestore') and hasattr(self.system.modulestore, 'get_course'), \
+            "modulestore has to be available"
+
+        course_module = self.system.modulestore.get_course(self.location.course_key)
+        group_configuration_url = None
+        if 'split_test' in course_module.advanced_modules:
+            user_partition = self.get_selected_partition()
+            if user_partition:
+                group_configuration_url = "{url}#{configuration_id}".format(
+                    url='/group_configurations/' + unicode(self.location.course_key),
+                    configuration_id=str(user_partition.id)
+                )
+
+        return group_configuration_url
+
     def _create_vertical_for_group(self, group, user_id):
         """
         Creates a vertical to associate with the group.
 
         This appends the new vertical to the end of children, and updates group_id_to_child.
         A mutable modulestore is needed to call this method (will need to update after mixed
-        modulestore work, currently relies on mongo's create_and_save_xmodule method).
+        modulestore work, currently relies on mongo's create_item method).
         """
-        assert hasattr(self.system, 'modulestore') and hasattr(self.system.modulestore, 'create_and_save_xmodule'), \
+        assert hasattr(self.system, 'modulestore') and hasattr(self.system.modulestore, 'create_item'), \
             "editor_saved should only be called when a mutable modulestore is available"
         modulestore = self.system.modulestore
         dest_usage_key = self.location.replace(category="vertical", name=uuid4().hex)
-        metadata = {'display_name': group.name}
-        modulestore.create_and_save_xmodule(
-            dest_usage_key,
+        metadata = {'display_name': DEFAULT_GROUP_NAME.format(group_id=group.id)}
+        modulestore.create_item(
             user_id,
+            self.location.course_key,
+            dest_usage_key.block_type,
+            block_id=dest_usage_key.block_id,
             definition_data=None,
             metadata=metadata,
             runtime=self.system,
         )
         self.children.append(dest_usage_key)  # pylint: disable=no-member
         self.group_id_to_child[unicode(group.id)] = dest_usage_key
+
+    @property
+    def general_validation_message(self):
+        """
+        Message for either error or warning validation message/s.
+
+        Returns message and type. Priority given to error type message.
+        """
+        validation_messages = self.validation_messages()
+        if validation_messages:
+            has_error = any(message.message_type == ValidationMessageType.error for message in validation_messages)
+            return {
+                'message': _(u"This content experiment has issues that affect content visibility."),
+                'type': ValidationMessageType.error if has_error else ValidationMessageType.warning,
+            }
+        return None

@@ -37,17 +37,18 @@ FEATURES['ENABLE_SHOPPING_CART'] = True
 FEATURES['AUTOMATIC_VERIFY_STUDENT_IDENTITY_FOR_TESTING'] = True
 FEATURES['ENABLE_S3_GRADE_DOWNLOADS'] = True
 FEATURES['IS_EDX_DOMAIN'] = True  # Is this an edX-owned domain? (used on instructor dashboard)
+FEATURES['ENABLE_PAYMENT_FAKE'] = True
 
 
 FEEDBACK_SUBMISSION_EMAIL = "dummy@example.com"
 
 WIKI_ENABLED = True
 
-LOGGING = get_logger_config(ENV_ROOT / "log",
-                            logging_env="dev",
-                            local_loglevel="DEBUG",
-                            dev_env=True,
-                            debug=True)
+DJFS = {
+    'type': 'osfs',
+    'directory_root': 'lms/static/djpyfs',
+    'url_root': '/static/djpyfs'
+}
 
 # If there is a database called 'read_replica', you can use the use_read_replica_if_available
 # function in util/query.py, which is useful for very large database reads
@@ -214,9 +215,11 @@ CELERY_ALWAYS_EAGER = True
 
 ################################ DEBUG TOOLBAR ################################
 
-INSTALLED_APPS += ('debug_toolbar',)
-MIDDLEWARE_CLASSES += ('django_comment_client.utils.QueryCountDebugMiddleware',
-                       'debug_toolbar.middleware.DebugToolbarMiddleware',)
+INSTALLED_APPS += ('debug_toolbar', 'djpyfs',)
+MIDDLEWARE_CLASSES += (
+    'django_comment_client.utils.QueryCountDebugMiddleware',
+    'debug_toolbar.middleware.DebugToolbarMiddleware',
+)
 INTERNAL_IPS = ('127.0.0.1',)
 
 DEBUG_TOOLBAR_PANELS = (
@@ -266,24 +269,28 @@ ANALYTICS_API_KEY = ""
 
 ANALYTICS_DATA_URL = "http://127.0.0.1:8080"
 ANALYTICS_DATA_TOKEN = ""
-FEATURES['ENABLE_ANALYTICS_ACTIVE_COUNT'] = True
+FEATURES['ENABLE_ANALYTICS_ACTIVE_COUNT'] = False
 
-##### segment-io  ######
+##### Segment.io  ######
 
 # If there's an environment variable set, grab it and turn on Segment.io
 SEGMENT_IO_LMS_KEY = os.environ.get('SEGMENT_IO_LMS_KEY')
 if SEGMENT_IO_LMS_KEY:
     FEATURES['SEGMENT_IO_LMS'] = True
 
-###################### Payment ##############################3
+###################### Payment ######################
 
 CC_PROCESSOR['CyberSource']['SHARED_SECRET'] = os.environ.get('CYBERSOURCE_SHARED_SECRET', '')
 CC_PROCESSOR['CyberSource']['MERCHANT_ID'] = os.environ.get('CYBERSOURCE_MERCHANT_ID', '')
 CC_PROCESSOR['CyberSource']['SERIAL_NUMBER'] = os.environ.get('CYBERSOURCE_SERIAL_NUMBER', '')
-CC_PROCESSOR['CyberSource']['PURCHASE_ENDPOINT'] = os.environ.get('CYBERSOURCE_PURCHASE_ENDPOINT', '')
+CC_PROCESSOR['CyberSource']['PURCHASE_ENDPOINT'] = '/shoppingcart/payment_fake/'
 
+CC_PROCESSOR['CyberSource2']['SECRET_KEY'] = os.environ.get('CYBERSOURCE_SECRET_KEY', '')
+CC_PROCESSOR['CyberSource2']['ACCESS_KEY'] = os.environ.get('CYBERSOURCE_ACCESS_KEY', '')
+CC_PROCESSOR['CyberSource2']['PROFILE_ID'] = os.environ.get('CYBERSOURCE_PROFILE_ID', '')
+CC_PROCESSOR['CyberSource2']['PURCHASE_ENDPOINT'] = '/shoppingcart/payment_fake/'
 
-########################## USER API ########################
+########################## USER API ##########################
 EDX_API_KEY = None
 
 ####################### Shoppingcart ###########################
@@ -291,6 +298,9 @@ FEATURES['ENABLE_SHOPPING_CART'] = True
 
 ### This enables the Metrics tab for the Instructor dashboard ###########
 FEATURES['CLASS_DASHBOARD'] = True
+
+### This settings is for the course registration code length ############
+REGISTRATION_CODE_LENGTH = 8
 
 #####################################################################
 # Lastly, see if the developer has any local overrides.

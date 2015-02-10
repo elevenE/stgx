@@ -4,7 +4,6 @@ from ratelimitbackend import admin
 from django.conf.urls.static import static
 
 import django.contrib.auth.views
-
 from microsite_configuration import microsite
 
 # Uncomment the next two lines to enable the admin:
@@ -119,15 +118,24 @@ urlpatterns += ((
 # Semi-static views only used by edX, not by themes
 if not settings.FEATURES["USE_CUSTOM_THEME"]:
     urlpatterns += (
-        url(r'^jobs$', 'static_template_view.views.render',
-            {'template': 'jobs.html'}, name="jobs"),
-        url(r'^press$', 'student.views.press', name="press"),
-        url(r'^media-kit$', 'static_template_view.views.render',
-            {'template': 'media-kit.html'}, name="media-kit"),
+        url(r'^blog$', 'static_template_view.views.render',
+            {'template': 'blog.html'}, name="blog"),
+        url(r'^contact$', 'static_template_view.views.render',
+            {'template': 'contact.html'}, name="contact"),
+        url(r'^donate$', 'static_template_view.views.render',
+            {'template': 'donate.html'}, name="donate"),
         url(r'^faq$', 'static_template_view.views.render',
-            {'template': 'faq.html'}, name="faq_edx"),
+            {'template': 'faq.html'}, name="faq"),
         url(r'^help$', 'static_template_view.views.render',
             {'template': 'help.html'}, name="help_edx"),
+        url(r'^jobs$', 'static_template_view.views.render',
+            {'template': 'jobs.html'}, name="jobs"),
+        url(r'^news$', 'static_template_view.views.render',
+            {'template': 'news.html'}, name="news"),
+        url(r'^press$', 'static_template_view.views.render',
+            {'template': 'press.html'}, name="press"),
+        url(r'^media-kit$', 'static_template_view.views.render',
+            {'template': 'media-kit.html'}, name="media-kit"),
 
         # TODO: (bridger) The copyright has been removed until it is updated for edX
         # url(r'^copyright$', 'static_template_view.views.render',
@@ -181,7 +189,7 @@ if settings.WIKI_ENABLED:
         # never be returned by a reverse() so they come after the other url patterns
         url(r'^courses/{}/course_wiki/?$'.format(settings.COURSE_ID_PATTERN),
             'course_wiki.views.course_wiki_redirect', name="course_wiki"),
-        url(r'^courses/(?:[^/]+/[^/]+/[^/]+)/wiki/', include(wiki_pattern())),
+        url(r'^courses/{}/wiki/'.format(settings.COURSE_ID_PATTERN), include(wiki_pattern())),
     )
 
 if settings.COURSEWARE_ENABLED:
@@ -224,6 +232,17 @@ if settings.COURSEWARE_ENABLED:
         url(r'^change_enrollment$',
             'student.views.change_enrollment', name="change_enrollment"),
         url(r'^change_email_settings$', 'student.views.change_email_settings', name="change_email_settings"),
+
+        # Used for an AB-test of auto-registration
+        # TODO (ECOM-16): Based on the AB-test, update the default behavior and change
+        # this URL to point to the original view.  Eventually, this URL
+        # should be removed, but not the AB test completes.
+        url(
+            r'^change_enrollment_autoreg$',
+            'student.views.change_enrollment',
+            {'auto_register': True},
+            name="change_enrollment_autoreg",
+        ),
 
         #About the course
         url(r'^courses/{}/about$'.format(settings.COURSE_ID_PATTERN),
@@ -281,6 +300,8 @@ if settings.COURSEWARE_ENABLED:
         # For the instructor
         url(r'^courses/{}/instructor$'.format(settings.COURSE_ID_PATTERN),
             'instructor.views.instructor_dashboard.instructor_dashboard_2', name="instructor_dashboard"),
+        url(r'^courses/{}/set_course_mode_price$'.format(settings.COURSE_ID_PATTERN),
+            'instructor.views.instructor_dashboard.set_course_mode_price', name="set_course_mode_price"),
         url(r'^courses/{}/instructor/api/'.format(settings.COURSE_ID_PATTERN),
             include('instructor.views.api_urls')),
         url(r'^courses/{}/remove_coupon$'.format(settings.COURSE_ID_PATTERN),
@@ -478,8 +499,12 @@ urlpatterns += (
 
 if settings.FEATURES.get('ENABLE_DEBUG_RUN_PYTHON'):
     urlpatterns += (
-        url(r'^debug/run_python', 'debug.views.run_python'),
+        url(r'^debug/run_python$', 'debug.views.run_python'),
     )
+
+urlpatterns += (
+    url(r'^debug/show_parameters$', 'debug.views.show_parameters'),
+)
 
 # Crowdsourced hinting instructor manager.
 if settings.FEATURES.get('ENABLE_HINTER_INSTRUCTOR_VIEW'):

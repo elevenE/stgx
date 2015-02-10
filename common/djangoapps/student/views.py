@@ -6,6 +6,7 @@ import logging
 import re
 import uuid
 import time
+import json
 from collections import defaultdict
 from pytz import UTC
 
@@ -45,7 +46,8 @@ from student.models import (
     Registration, UserProfile, PendingNameChange,
     PendingEmailChange, CourseEnrollment, unique_id_for_user,
     CourseEnrollmentAllowed, UserStanding, LoginFailures,
-    create_comments_service_user, PasswordHistory, UserSignupSource
+    create_comments_service_user, PasswordHistory, UserSignupSource,
+    anonymous_id_for_user
 )
 from student.forms import PasswordResetFormNoActive
 
@@ -55,6 +57,7 @@ from dark_lang.models import DarkLangConfig
 
 from xmodule.modulestore.exceptions import ItemNotFoundError
 from xmodule.modulestore.django import modulestore
+from opaque_keys import InvalidKeyError
 from opaque_keys.edx.locations import SlashSeparatedCourseKey
 from xmodule.modulestore import ModuleStoreEnum
 
@@ -89,6 +92,10 @@ from util.password_policy_validators import (
 
 from third_party_auth import pipeline, provider
 from xmodule.error_module import ErrorDescriptor
+from shoppingcart.models import CourseRegistrationCode
+
+import analytics
+from eventtracking import tracker
 
 
 log = logging.getLogger("edx.student")
@@ -145,10 +152,6 @@ def embargo(_request):
     except TopLevelLookupException:
         pass
     return render_to_response("static_templates/embargo.html")
-
-
-def press(request):
-    return render_to_response('static_templates/press.html')
 
 
 def process_survey_link(survey_link, user):
@@ -284,6 +287,11 @@ def _cert_info(user, course, cert_status):
     if cert_status is None:
         return default_info
 
+    is_hidden_status = cert_status['status'] in ('unavailable', 'processing', 'generating', 'notpassing')
+
+    if course.certificates_display_behavior == 'early_no_info' and is_hidden_status:
+        return None
+
     status = template_state.get(cert_status['status'], default_status)
 
     d = {'status': status,
@@ -378,6 +386,10 @@ def register_user(request, extra_context=None):
         'username': '',
     }
 
+    # We save this so, later on, we can determine what course motivated a user's signup
+    # if they actually complete the registration process
+    request.session['registration_course_id'] = context['course_id']
+
     if extra_context is not None:
         context.update(extra_context)
 
@@ -419,6 +431,20 @@ def complete_course_mode_info(course_id, enrollment):
 
     return mode_info
 
+
+def is_course_blocked(request, redeemed_registration_codes, course_key):
+    """Checking either registration is blocked or not ."""
+    blocked = False
+    for redeemed_registration in redeemed_registration_codes:
+        if not getattr(redeemed_registration.invoice, 'is_valid'):
+            blocked = True
+            # disabling email notifications for unpaid registration courses
+            Optout.objects.get_or_create(user=request.user, course_id=course_key)
+            log.info(u"User {0} ({1}) opted out of receiving emails from course {2}".format(request.user.username, request.user.email, course_key))
+            track.views.server_track(request, "change-email1-settings", {"receive_emails": "no", "course": course_key.to_deprecated_string()}, page='dashboard')
+            break
+
+    return blocked
 
 @login_required
 @ensure_csrf_cookie
@@ -482,6 +508,12 @@ def dashboard(request):
     show_refund_option_for = frozenset(course.id for course, _enrollment in course_enrollment_pairs
                                        if _enrollment.refundable())
 
+    block_courses = frozenset(course.id for course, enrollment in course_enrollment_pairs
+                              if is_course_blocked(request, CourseRegistrationCode.objects.filter(course_id=course.id, registrationcoderedemption__redeemed_by=request.user), course.id))
+
+
+    enrolled_courses_either_paid = frozenset(course.id for course, _enrollment in course_enrollment_pairs
+                                             if _enrollment.is_paid_course())
     # get info w.r.t ExternalAuthMap
     external_auth_map = None
     try:
@@ -502,12 +534,18 @@ def dashboard(request):
         language_options.sort()
 
     # try to get the prefered language for the user
-    cur_lang_code = UserPreference.get_preference(request.user, LANGUAGE_KEY)
-    if cur_lang_code:
+    cur_pref_lang_code = UserPreference.get_preference(request.user, LANGUAGE_KEY)
+    # try and get the current language of the user
+    cur_lang_code = get_language()
+    if cur_pref_lang_code and cur_pref_lang_code in settings.LANGUAGE_DICT:
         # if the user has a preference, get the name from the code
+        current_language = settings.LANGUAGE_DICT[cur_pref_lang_code]
+    elif cur_lang_code in settings.LANGUAGE_DICT:
+        # if the user's browser is showing a particular language,
+        # use that as the current language
         current_language = settings.LANGUAGE_DICT[cur_lang_code]
     else:
-        # if the user doesn't have a preference, use the default language
+        # otherwise, use the default language
         current_language = settings.LANGUAGE_DICT[settings.LANGUAGE_CODE]
 
     context = {
@@ -525,6 +563,7 @@ def dashboard(request):
         'verification_status': verification_status,
         'verification_msg': verification_msg,
         'show_refund_option_for': show_refund_option_for,
+        'block_courses': block_courses,
         'denied_banner': denied_banner,
         'billing_email': settings.PAYMENT_SUPPORT_EMAIL,
         'language_options': language_options,
@@ -534,6 +573,7 @@ def dashboard(request):
         'duplicate_provider': None,
         'logout_url': reverse(logout_user),
         'platform_name': settings.PLATFORM_NAME,
+        'enrolled_courses_either_paid': enrolled_courses_either_paid,
         'provider_states': [],
     }
 
@@ -573,7 +613,7 @@ def try_change_enrollment(request):
 
 
 @require_POST
-def change_enrollment(request):
+def change_enrollment(request, auto_register=False):
     """
     Modify the enrollment status for the logged-in user.
 
@@ -589,6 +629,24 @@ def change_enrollment(request):
     happens. This function should only be called from an AJAX request or
     as a post-login/registration helper, so the error messages in the responses
     should never actually be user-visible.
+    The original version of the change enrollment handler,
+    which does NOT perform auto-registration.
+
+    TODO (ECOM-16): We created a second variation of this handler that performs
+    auto-registration for an AB-test.  Depending on the results of that test,
+    we should make the winning implementation the default.
+
+    Args:
+        request (`Request`): The Django request object
+
+    Keyword Args:
+        auto_register (boolean): If True, auto-register the user
+            for a default course mode when they first enroll
+            before sending them to the "choose your track" page
+
+    Returns:
+        Response
+
     """
     user = request.user
 
@@ -596,7 +654,32 @@ def change_enrollment(request):
     if 'course_id' not in request.POST:
         return HttpResponseBadRequest(_("Course id not specified"))
 
-    course_id = SlashSeparatedCourseKey.from_deprecated_string(request.POST.get("course_id"))
+    try:
+        course_id = SlashSeparatedCourseKey.from_deprecated_string(request.POST.get("course_id"))
+    except InvalidKeyError:
+        log.warning("User {username} tried to {action} with invalid course id: {course_id}".format(
+            username=user.username, action=action, course_id=request.POST.get("course_id")
+        ))
+        return HttpResponseBadRequest(_("Invalid course id"))
+
+    # TODO (ECOM-16): Remove this once the auto-registration A/B test completes
+    # If a user is in the experimental condition (auto-registration enabled),
+    # immediately set a session flag so they stay in the experimental condition.
+    # We keep them in the experimental condition even if later on the user
+    # tries to register using the control URL (e.g. because of a redirect from the login page,
+    # which is hard-coded to use the control URL).
+    if auto_register:
+        request.session['auto_register'] = True
+    if request.session.get('auto_register') and not auto_register:
+        auto_register = True
+
+    # TODO (ECOM-16): Remove this once the auto-registration A/B test completes
+    # We've agreed to exclude certain courses from the A/B test.  If we find ourselves
+    # registering for one of these courses, immediately switch to the control.
+    if unicode(course_id) in getattr(settings, 'AUTO_REGISTRATION_AB_TEST_EXCLUDE_COURSES', []):
+        auto_register = False
+        if 'auto_register' in request.session:
+            del request.session['auto_register']
 
     if not user.is_authenticated():
         return HttpResponseForbidden()
@@ -626,18 +709,68 @@ def change_enrollment(request):
                 _("Student is already enrolled")
             )
 
-        # If this course is available in multiple modes, redirect them to a page
-        # where they can choose which mode they want.
-        available_modes = CourseMode.modes_for_course(course_id)
-        if len(available_modes) > 1:
-            return HttpResponse(
-                reverse("course_modes_choose", kwargs={'course_id': course_id.to_deprecated_string()})
-            )
+        # We use this flag to determine which condition of an AB-test
+        # for auto-registration we're currently in.
+        # (We have two URLs that both point to this view, but vary the
+        # value of `auto_register`)
+        # In the auto-registration case, we automatically register the student
+        # as "honor" before allowing them to choose a track.
+        # TODO (ECOM-16): Once the auto-registration AB-test is complete, delete
+        # one of these two conditions and remove the `auto_register` flag.
+        if auto_register:
+            available_modes = CourseMode.modes_for_course_dict(course_id)
 
-        current_mode = available_modes[0]
-        CourseEnrollment.enroll(user, course.id, mode=current_mode.slug)
+            # Handle professional ed as a special case.
+            # If professional ed is included in the list of available modes,
+            # then do NOT automatically enroll the student (we want them to pay first!)
+            # By convention, professional ed should be the *only* available course mode,
+            # if it's included at all -- anything else is a misconfiguration.  But if someone
+            # messes up and adds an additional course mode, we err on the side of NOT
+            # accidentally giving away free courses.
+            if "professional" not in available_modes:
+                # Enroll the user using the default mode (honor)
+                # We're assuming that users of the course enrollment table
+                # will NOT try to look up the course enrollment model
+                # by its slug.  If they do, it's possible (based on the state of the database)
+                # for no such model to exist, even though we've set the enrollment type
+                # to "honor".
+                CourseEnrollment.enroll(user, course.id)
 
-        return HttpResponse()
+            # If we have more than one course mode or professional ed is enabled,
+            # then send the user to the choose your track page.
+            # (In the case of professional ed, this will redirect to a page that
+            # funnels users directly into the verification / payment flow)
+            if len(available_modes) > 1 or "professional" in available_modes:
+                return HttpResponse(
+                    reverse("course_modes_choose", kwargs={'course_id': unicode(course_id)})
+                )
+
+            # Otherwise, there is only one mode available (the default)
+            return HttpResponse()
+
+        # If auto-registration is disabled, do NOT register the student
+        # before sending them to the "choose your track" page.
+        # This is the control for the auto-registration AB-test.
+        else:
+            # If this course is available in multiple modes, redirect them to a page
+            # where they can choose which mode they want.
+            available_modes = CourseMode.modes_for_course(course_id)
+            if len(available_modes) > 1:
+                return HttpResponse(
+                    reverse("course_modes_choose", kwargs={'course_id': unicode(course_id)})
+                )
+
+            current_mode = available_modes[0]
+            # only automatically enroll people if the only mode is 'honor'
+            if current_mode.slug != 'honor':
+                return HttpResponse(
+                    reverse("course_modes_choose", kwargs={'course_id': unicode(course_id)})
+                )
+
+            CourseEnrollment.enroll(user, course.id, mode=current_mode.slug)
+
+            return HttpResponse()
+
 
     elif action == "add_to_cart":
         # Pass the request handling to shoppingcart.views
@@ -708,7 +841,7 @@ def accounts_login(request):
     if redirect_to:
         course_id = _parse_course_id_from_string(redirect_to)
         if course_id and _get_course_enrollment_domain(course_id):
-            return external_auth.views.course_specific_login(request, course_id)
+            return external_auth.views.course_specific_login(request, course_id.to_deprecated_string())
 
     context = {
         'pipeline_running': 'false',
@@ -750,13 +883,17 @@ def login_user(request, error=""):  # pylint: disable-msg=too-many-statements,un
             AUDIT_LOG.warning(
                 u'Login failed - user with username {username} has no social auth with backend_name {backend_name}'.format(
                     username=username, backend_name=backend_name))
-            return JsonResponse({
-                "success": False,
-                # Translators: provider_name is the name of an external, third-party user authentication service (like
-                # Google or LinkedIn).
-                "value": _('There is no {platform_name} account associated with your {provider_name} account. Please use your {platform_name} credentials or pick another provider.').format(
-                    platform_name=settings.PLATFORM_NAME, provider_name=requested_provider.NAME)
-            })  # TODO: this should be a status code 401  # pylint: disable=fixme
+            return HttpResponseBadRequest(
+                _("You've successfully logged into your {provider_name} account, but this account isn't linked with an {platform_name} account yet.").format(
+                      platform_name=settings.PLATFORM_NAME, provider_name=requested_provider.NAME) 
+                  + "<br/><br/>" + _("Use your {platform_name} username and password to log into {platform_name} below, "
+                  "and then link your {platform_name} account with {provider_name} from your dashboard.").format(
+                      platform_name=settings.PLATFORM_NAME, provider_name=requested_provider.NAME) 
+                  + "<br/><br/>" + _("If you don't have an {platform_name} account yet, click <strong>Register Now</strong> at the top of the page.").format(
+                      platform_name=settings.PLATFORM_NAME),
+                content_type="text/plain",
+                status=401
+            )
 
     else:
 
@@ -845,6 +982,31 @@ def login_user(request, error=""):  # pylint: disable-msg=too-many-statements,un
     # successful login, clear failed login attempts counters, if applicable
     if LoginFailures.is_feature_enabled():
         LoginFailures.clear_lockout_counter(user)
+
+    # Track the user's sign in
+    if settings.FEATURES.get('SEGMENT_IO_LMS') and hasattr(settings, 'SEGMENT_IO_LMS_KEY'):
+        tracking_context = tracker.get_tracker().resolve_context()
+        analytics.identify(user.id, {
+            'email': email,
+            'username': username,
+        })
+
+        # If the user entered the flow via a specific course page, we track that
+        registration_course_id = request.session.get('registration_course_id')
+        analytics.track(
+            user.id,
+            "edx.bi.user.account.authenticated",
+            {
+                'category': "conversion",
+                'label': registration_course_id
+            },
+            context={
+                'Google Analytics': {
+                    'clientId': tracking_context.get('client_id') 
+                }
+            }
+        )
+        request.session['registration_course_id'] = None
 
     if user is not None and user.is_active:
         try:
@@ -1039,7 +1201,7 @@ def user_signup_handler(sender, **kwargs):  # pylint: disable=W0613
             log.info(u'user {} originated from a white labeled "Microsite"'.format(kwargs['instance'].id))
 
 
-def _do_create_account(post_vars):
+def _do_create_account(post_vars, extended_profile=None):
     """
     Given cleaned post variables, create the User and UserProfile objects, as well as the
     registration for this user.
@@ -1089,6 +1251,10 @@ def _do_create_account(post_vars):
     profile.country = post_vars.get('country')
     profile.goals = post_vars.get('goals')
 
+    # add any extended profile information in the denormalized 'meta' field in the profile
+    if extended_profile:
+        profile.meta = json.dumps(extended_profile)
+
     try:
         profile.year_of_birth = int(post_vars['year_of_birth'])
     except (ValueError, KeyError):
@@ -1115,7 +1281,12 @@ def create_account(request, post_override=None):  # pylint: disable-msg=too-many
     js = {'success': False}  # pylint: disable-msg=invalid-name
 
     post_vars = post_override if post_override else request.POST
-    extra_fields = getattr(settings, 'REGISTRATION_EXTRA_FIELDS', {})
+
+    # allow for microsites to define their own set of required/optional/hidden fields
+    extra_fields = microsite.get_value(
+        'REGISTRATION_EXTRA_FIELDS',
+        getattr(settings, 'REGISTRATION_EXTRA_FIELDS', {})
+    )
 
     if settings.FEATURES.get('ENABLE_THIRD_PARTY_AUTH') and pipeline.running(request):
         post_vars = dict(post_vars.items())
@@ -1188,7 +1359,7 @@ def create_account(request, post_override=None):  # pylint: disable-msg=too-many
         else:
             min_length = 2
 
-        if len(post_vars[field_name]) < min_length:
+        if field_name not in post_vars or len(post_vars[field_name]) < min_length:
             error_str = {
                 'username': _('Username must be minimum of two characters long'),
                 'email': _('A properly formatted e-mail is required'),
@@ -1204,7 +1375,12 @@ def create_account(request, post_override=None):  # pylint: disable-msg=too-many
                 'city': _('A city is required'),
                 'country': _('A country is required')
             }
-            js['value'] = error_str[field_name]
+
+            if field_name in error_str:
+                js['value'] = error_str[field_name]
+            else:
+                js['value'] = _('You are missing one or more required fields')
+
             js['field'] = field_name
             return JsonResponse(js, status=400)
 
@@ -1236,7 +1412,8 @@ def create_account(request, post_override=None):  # pylint: disable-msg=too-many
         return JsonResponse(js, status=400)
 
     # enforce password complexity as an optional feature
-    if settings.FEATURES.get('ENFORCE_PASSWORD_POLICY', False):
+    # but not if we're doing ext auth b/c those pws never get used and are auto-generated so might not pass validation
+    if settings.FEATURES.get('ENFORCE_PASSWORD_POLICY', False) and not DoExternalAuth:
         try:
             password = post_vars['password']
 
@@ -1248,16 +1425,63 @@ def create_account(request, post_override=None):  # pylint: disable-msg=too-many
             js['field'] = 'password'
             return JsonResponse(js, status=400)
 
+    # allow microsites to define 'extended profile fields' which are
+    # captured on user signup (for example via an overriden registration.html)
+    # and then stored in the UserProfile
+    extended_profile_fields = microsite.get_value('extended_profile_fields', [])
+    extended_profile = None
+
+    for field in extended_profile_fields:
+        if field in post_vars:
+            if not extended_profile:
+                extended_profile = {}
+            extended_profile[field] = post_vars[field]
+
+    # Make sure that password and username fields do not match
+    username = post_vars['username']
+    password = post_vars['password']
+    if username == password:
+        js['value'] = _("Username and password fields cannot match")
+        js['field'] = 'username'
+        return JsonResponse(js, status=400)
+
     # Ok, looks like everything is legit.  Create the account.
     try:
         with transaction.commit_on_success():
-            ret = _do_create_account(post_vars)
+            ret = _do_create_account(post_vars, extended_profile)
     except AccountValidationError as e:
         return JsonResponse({'success': False, 'value': e.message, 'field': e.field}, status=400)
 
     (user, profile, registration) = ret
 
     dog_stats_api.increment("common.student.account_created")
+
+    email = post_vars['email']
+
+    # Track the user's registration
+    if settings.FEATURES.get('SEGMENT_IO_LMS') and hasattr(settings, 'SEGMENT_IO_LMS_KEY'):
+        tracking_context = tracker.get_tracker().resolve_context()
+        analytics.identify(user.id, {
+            email: email,
+            username: username,
+        })
+
+        registration_course_id = request.session.get('registration_course_id')
+        analytics.track(
+            user.id,
+            "edx.bi.user.account.registered", 
+            {
+                "category": "conversion",
+                "label": registration_course_id
+            },
+            context={
+                'Google Analytics': {
+                    'clientId': tracking_context.get('client_id') 
+                }
+            }
+        )
+        request.session['registration_course_id'] = None
+
     create_comments_service_user(user)
 
     context = {

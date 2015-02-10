@@ -90,6 +90,21 @@ def get_student_from_identifier(unique_student_identifier):
     return student
 
 
+def require_student_from_identifier(unique_student_identifier):
+    """
+    Same as get_student_from_identifier() but will raise a DashboardError if
+    the student does not exist.
+    """
+    try:
+        return get_student_from_identifier(unique_student_identifier)
+    except User.DoesNotExist:
+        raise DashboardError(
+            _("Could not find student matching identifier: {student_identifier}").format(
+                student_identifier=unique_student_identifier
+            )
+        )
+
+
 def parse_datetime(datestr):
     """
     Convert user input date string into an instance of `datetime.datetime` in
@@ -159,10 +174,40 @@ def title_or_url(node):
     return title
 
 
+def get_extended_due(course, unit, student):
+    """
+    Get the extended due date out of a student's state for a particular unit.
+    """
+    student_module = StudentModule.objects.get(
+        student_id=student.id,
+        course_id=course.id,
+        module_state_key=unit.location
+    )
+
+    state = json.loads(student_module.state)
+    extended = state.get('extended_due', None)
+    if extended:
+        return DATE_FIELD.from_json(extended)
+
+
 def set_due_date_extension(course, unit, student, due_date):
     """
-    Sets a due date extension.
+    Sets a due date extension. Raises DashboardError if the unit or extended
+    due date is invalid.
     """
+    if due_date:
+        # Check that the new due date is valid:
+        original_due_date = getattr(unit, 'due', None)
+
+        if not original_due_date:
+            raise DashboardError(_("Unit {0} has no due date to extend.").format(unit.location))
+        if due_date < original_due_date:
+            raise DashboardError(_("An extended due date must be later than the original due date."))
+    else:
+        # We are deleting a due date extension. Check that it exists:
+        if not get_extended_due(course, unit, student):
+            raise DashboardError(_("No due date extension is set for that student and unit."))
+
     def set_due_date(node):
         """
         Recursively set the due date on a node and all of its children.
@@ -173,13 +218,30 @@ def set_due_date_extension(course, unit, student, due_date):
                 course_id=course.id,
                 module_state_key=node.location
             )
-
             state = json.loads(student_module.state)
-            state['extended_due'] = DATE_FIELD.to_json(due_date)
-            student_module.state = json.dumps(state)
-            student_module.save()
+
         except StudentModule.DoesNotExist:
-            pass
+            # Normally, a StudentModule is created as a side effect of assigning
+            # a value to a property in an XModule or XBlock which has a scope
+            # of 'Scope.user_state'.  Here, we want to alter user state but
+            # can't use the standard XModule/XBlock machinery to do so, because
+            # it fails to take into account that the state being altered might
+            # belong to a student other than the one currently logged in.  As a
+            # result, in our work around, we need to detect whether the
+            # StudentModule has been created for the given student on the given
+            # unit and create it if it is missing, so we can use it to store
+            # the extended due date.
+            student_module = StudentModule.objects.create(
+                student_id=student.id,
+                course_id=course.id,
+                module_state_key=node.location,
+                module_type=node.category
+            )
+            state = {}
+
+        state['extended_due'] = DATE_FIELD.to_json(due_date)
+        student_module.state = json.dumps(state)
+        student_module.save()
 
         for child in node.get_children():
             set_due_date(child)

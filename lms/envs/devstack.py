@@ -39,7 +39,11 @@ ANALYTICS_API_KEY = ""
 
 ANALYTICS_DATA_URL = "http://127.0.0.1:8080"
 ANALYTICS_DATA_TOKEN = ""
-FEATURES['ENABLE_ANALYTICS_ACTIVE_COUNT'] = True
+FEATURES['ENABLE_ANALYTICS_ACTIVE_COUNT'] = False
+
+# Set this to the dashboard URL in order to display the link from the
+# dashboard to the Analytics Dashboard.
+ANALYTICS_DASHBOARD_URL = None
 
 
 ################################ DEBUG TOOLBAR ################################
@@ -79,7 +83,16 @@ PIPELINE_SASS_ARGUMENTS = '--debug-info --require {proj_dir}/static/sass/bourbon
 
 FEATURES['AUTOMATIC_VERIFY_STUDENT_IDENTITY_FOR_TESTING'] = True
 FEATURES['ENABLE_PAYMENT_FAKE'] = True
-CC_PROCESSOR['CyberSource']['PURCHASE_ENDPOINT'] = '/shoppingcart/payment_fake/'
+
+CC_PROCESSOR_NAME = 'CyberSource2'
+CC_PROCESSOR = {
+    'CyberSource2': {
+        "PURCHASE_ENDPOINT": '/shoppingcart/payment_fake/',
+        "SECRET_KEY": 'abcd123',
+        "ACCESS_KEY": 'abcd123',
+        "PROFILE_ID": 'edx',
+    }
+}
 
 #####################################################################
 # See if the developer has any local overrides.

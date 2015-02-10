@@ -9,6 +9,7 @@ from opaque_keys.edx.locator import CourseLocator, BlockUsageLocator
 from xmodule.modulestore.split_mongo.split import SplitMongoModuleStore
 from xmodule.modulestore.mongo import DraftMongoModuleStore
 from xmodule.modulestore import ModuleStoreEnum
+from xmodule.modulestore.tests.mongo_connection import MONGO_PORT_NUM, MONGO_HOST
 
 
 class SplitWMongoCourseBoostrapper(unittest.TestCase):
@@ -27,7 +28,8 @@ class SplitWMongoCourseBoostrapper(unittest.TestCase):
     """
         # Snippet of what would be in the django settings envs file
     db_config = {
-        'host': 'localhost',
+        'host': MONGO_HOST,
+        'port': MONGO_PORT_NUM,
         'db': 'test_xmodule',
     }
 
@@ -86,9 +88,14 @@ class SplitWMongoCourseBoostrapper(unittest.TestCase):
         existing draft for both the new item and the parent
         """
         location = self.old_course_key.make_usage_key(category, name)
-
-        self.draft_mongo.create_and_save_xmodule(
-            location, self.user_id, definition_data=data, metadata=metadata, runtime=self.runtime
+        self.draft_mongo.create_item(
+            self.user_id,
+            location.course_key,
+            location.block_type,
+            block_id=location.block_id,
+            definition_data=data,
+            metadata=metadata,
+            runtime=self.runtime
         )
         if not draft:
             self.draft_mongo.publish(location, self.user_id)
@@ -105,16 +112,28 @@ class SplitWMongoCourseBoostrapper(unittest.TestCase):
             self.draft_mongo.update_item(parent, self.user_id)
             if not draft:
                 self.draft_mongo.publish(parent_location, self.user_id)
-            # create pointer for split
-            course_or_parent_locator = BlockUsageLocator(
-                course_key=self.split_course_key,
-                block_type=parent_category,
-                block_id=parent_name
-            )
+            # create child for split
+            if split:
+                self.split_mongo.create_child(
+                    self.user_id,
+                    BlockUsageLocator(
+                        course_key=self.split_course_key,
+                        block_type=parent_category,
+                        block_id=parent_name
+                    ),
+                    category,
+                    block_id=name,
+                    fields=fields
+                )
         else:
-            course_or_parent_locator = self.split_course_key
-        if split:
-            self.split_mongo.create_item(course_or_parent_locator, category, self.user_id, block_id=name, fields=fields)
+            if split:
+                self.split_mongo.create_item(
+                    self.user_id,
+                    self.split_course_key,
+                    category,
+                    block_id=name,
+                    fields=fields
+                )
 
     def _create_course(self, split=True):
         """

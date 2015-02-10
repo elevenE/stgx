@@ -31,7 +31,9 @@ from xmodule_django.models import CourseKeyField
 from verify_student.models import SoftwareSecurePhotoVerification
 
 from .exceptions import (InvalidCartItem, PurchasedCallbackException, ItemAlreadyInCartException,
-                         AlreadyEnrolledInCourseException, CourseDoesNotExistException, CouponAlreadyExistException, ItemDoesNotExistAgainstCouponException)
+                         AlreadyEnrolledInCourseException, CourseDoesNotExistException,
+                         CouponAlreadyExistException, ItemDoesNotExistAgainstCouponException,
+                         RegCodeAlreadyExistException, ItemDoesNotExistAgainstRegCodeException)
 
 from microsite_configuration import microsite
 
@@ -87,15 +89,17 @@ class Order(models.Model):
         return cart_order
 
     @classmethod
-    def user_cart_has_items(cls, user):
+    def user_cart_has_items(cls, user, item_type=None):
         """
         Returns true if the user (anonymous user ok) has
         a cart with items in it.  (Which means it should be displayed.
+        If a item_type is passed in, then we check to see if the cart has at least one of
+        those types of OrderItems
         """
         if not user.is_authenticated():
             return False
         cart = cls.get_cart_for_user(user)
-        return cart.has_items()
+        return cart.has_items(item_type)
 
     @property
     def total_cost(self):
@@ -105,11 +109,19 @@ class Order(models.Model):
         """
         return sum(i.line_cost for i in self.orderitem_set.filter(status=self.status))  # pylint: disable=E1101
 
-    def has_items(self):
+    def has_items(self, item_type=None):
         """
         Does the cart have any items in it?
+        If an item_type is passed in then we check to see if there are any items of that class type
         """
-        return self.orderitem_set.exists()  # pylint: disable=E1101
+        if not item_type:
+            return self.orderitem_set.exists()  # pylint: disable=E1101
+        else:
+            items = self.orderitem_set.all().select_subclasses()
+            for item in items:
+                if isinstance(item, item_type):
+                    return True
+            return False
 
     def clear(self):
         """
@@ -305,18 +317,115 @@ class OrderItem(models.Model):
         return ''
 
 
+class Invoice(models.Model):
+    """
+         This table capture all the information needed to support "invoicing"
+         which is when a user wants to purchase Registration Codes,
+         but will not do so via a Credit Card transaction.
+    """
+    company_name = models.CharField(max_length=255, db_index=True)
+    company_contact_name = models.CharField(max_length=255)
+    company_contact_email = models.CharField(max_length=255)
+    recipient_name = models.CharField(max_length=255)
+    recipient_email = models.CharField(max_length=255)
+    address_line_1 = models.CharField(max_length=255)
+    address_line_2 = models.CharField(max_length=255, null=True)
+    address_line_3 = models.CharField(max_length=255, null=True)
+    city = models.CharField(max_length=255, null=True)
+    state = models.CharField(max_length=255, null=True)
+    zip = models.CharField(max_length=15, null=True)
+    country = models.CharField(max_length=64, null=True)
+    course_id = CourseKeyField(max_length=255, db_index=True)
+    total_amount = models.FloatField()
+    internal_reference = models.CharField(max_length=255, null=True)
+    customer_reference_number = models.CharField(max_length=63, null=True)
+    is_valid = models.BooleanField(default=True)
+
+
 class CourseRegistrationCode(models.Model):
     """
     This table contains registration codes
     With registration code, a user can register for a course for free
     """
-    code = models.CharField(max_length=32, db_index=True)
+    code = models.CharField(max_length=32, db_index=True, unique=True)
     course_id = CourseKeyField(max_length=255, db_index=True)
-    transaction_group_name = models.CharField(max_length=255, db_index=True, null=True, blank=True)
     created_by = models.ForeignKey(User, related_name='created_by_user')
     created_at = models.DateTimeField(default=datetime.now(pytz.utc))
-    redeemed_by = models.ForeignKey(User, null=True, related_name='redeemed_by_user')
+    invoice = models.ForeignKey(Invoice, null=True)
+
+    @classmethod
+    @transaction.commit_on_success
+    def free_user_enrollment(cls, cart):
+        """
+        Here we enroll the user free for all courses available in shopping cart
+        """
+        cart_items = cart.orderitem_set.all().select_subclasses()
+        if cart_items:
+            for item in cart_items:
+                CourseEnrollment.enroll(cart.user, item.course_id)
+                log.info("Enrolled '{0}' in free course '{1}'"
+                         .format(cart.user.email, item.course_id))  # pylint: disable=E1101
+                item.status = 'purchased'
+                item.save()
+
+            cart.status = 'purchased'
+            cart.purchase_time = datetime.now(pytz.utc)
+            cart.save()
+
+
+class RegistrationCodeRedemption(models.Model):
+    """
+    This model contains the registration-code redemption info
+    """
+    order = models.ForeignKey(Order, db_index=True)
+    registration_code = models.ForeignKey(CourseRegistrationCode, db_index=True)
+    redeemed_by = models.ForeignKey(User, db_index=True)
     redeemed_at = models.DateTimeField(default=datetime.now(pytz.utc), null=True)
+
+    @classmethod
+    def add_reg_code_redemption(cls, course_reg_code, order):
+        """
+        add course registration code info into RegistrationCodeRedemption model
+        """
+        cart_items = order.orderitem_set.all().select_subclasses()
+
+        for item in cart_items:
+            if getattr(item, 'course_id'):
+                if item.course_id == course_reg_code.course_id:
+                    # If another account tries to use a existing registration code before the student checks out, an
+                    # error message will appear.The reg code is un-reusable.
+                    code_redemption = cls.objects.filter(registration_code=course_reg_code)
+                    if code_redemption:
+                        log.exception("Registration code '{0}' already used".format(course_reg_code.code))
+                        raise RegCodeAlreadyExistException
+
+                    code_redemption = RegistrationCodeRedemption(registration_code=course_reg_code, order=order, redeemed_by=order.user)
+                    code_redemption.save()
+                    item.list_price = item.unit_cost
+                    item.unit_cost = 0
+                    item.save()
+                    log.info("Code '{0}' is used by user {1} against order id '{2}' "
+                             .format(course_reg_code.code, order.user.username, order.id))
+                    return course_reg_code
+
+        log.warning("Course item does not exist against registration code '{0}'".format(course_reg_code.code))
+        raise ItemDoesNotExistAgainstRegCodeException
+
+
+class SoftDeleteCouponManager(models.Manager):
+    """ Use this manager to get objects that have a is_active=True """
+
+    def get_active_coupons_query_set(self):
+        """
+        filter the is_active = True Coupons only
+        """
+        return super(SoftDeleteCouponManager, self).get_query_set().filter(is_active=True)
+
+    def get_query_set(self):
+        """
+        get all the coupon objects
+        """
+        return super(SoftDeleteCouponManager, self).get_query_set()
 
 
 class Coupon(models.Model):
@@ -331,6 +440,11 @@ class Coupon(models.Model):
     created_by = models.ForeignKey(User)
     created_at = models.DateTimeField(default=datetime.now(pytz.utc))
     is_active = models.BooleanField(default=True)
+
+    def __unicode__(self):
+        return "[Coupon] code: {} course: {}".format(self.code, self.course_id)
+
+    objects = SoftDeleteCouponManager()
 
 
 class CouponRedemption(models.Model):
@@ -389,8 +503,11 @@ class PaidCourseRegistration(OrderItem):
         """
         Is the course defined by course_id contained in the order?
         """
-        return course_id in [item.paidcourseregistration.course_id
-                             for item in order.orderitem_set.all().select_subclasses("paidcourseregistration")]
+        return course_id in [
+            item.course_id
+            for item in order.orderitem_set.all().select_subclasses("paidcourseregistration")
+            if isinstance(item, cls)
+        ]
 
     @classmethod
     def get_total_amount_of_purchased_item(cls, course_key):
@@ -482,7 +599,7 @@ class PaidCourseRegistration(OrderItem):
         Generates instructions when the user has purchased a PaidCourseRegistration.
         Basically tells the user to visit the dashboard to see their new classes
         """
-        notification = (_('Please visit your <a href="{dashboard_link}">dashboard</a> to see your new enrollments.')
+        notification = (_('Please visit your <a href="{dashboard_link}">dashboard</a>  to see your new course.')
                         .format(dashboard_link=reverse('dashboard')))
 
         return self.pk_with_subclass, set([notification])
@@ -612,8 +729,13 @@ class CertificateItem(OrderItem):
         item.qty = 1
         item.unit_cost = cost
         course_name = modulestore().get_course(course_id).display_name
-        item.line_desc = _("Certificate of Achievement, {mode_name} for course {course}").format(mode_name=mode_info.name,
-                                                                                                 course=course_name)
+        # Translators: In this particular case, mode_name refers to a
+        # particular mode (i.e. Honor Code Certificate, Verified Certificate, etc)
+        # by which a user could enroll in the given course.
+        item.line_desc = _("{mode_name} for course {course}").format(
+            mode_name=mode_info.name,
+            course=course_name
+        )
         item.currency = currency
         order.currency = currency
         order.save()
@@ -636,7 +758,7 @@ class CertificateItem(OrderItem):
 
     @property
     def single_item_receipt_template(self):
-        if self.mode == 'verified':
+        if self.mode in ('verified', 'professional'):
             return 'shoppingcart/verified_cert_receipt.html'
         else:
             return super(CertificateItem, self).single_item_receipt_template

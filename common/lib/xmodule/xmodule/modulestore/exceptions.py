@@ -54,14 +54,16 @@ class DuplicateItemError(Exception):
             self, Exception.__str__(self, *args, **kwargs)
         )
 
+
 class VersionConflictError(Exception):
     """
     The caller asked for either draft or published head and gave a version which conflicted with it.
     """
     def __init__(self, requestedLocation, currentHeadVersionGuid):
-        super(VersionConflictError, self).__init__()
-        self.requestedLocation = requestedLocation
-        self.currentHeadVersionGuid = currentHeadVersionGuid
+        super(VersionConflictError, self).__init__(u'Requested {}, but current head is {}'.format(
+            requestedLocation,
+            currentHeadVersionGuid
+        ))
 
 
 class DuplicateCourseError(Exception):
@@ -85,3 +87,6 @@ class InvalidBranchSetting(Exception):
         super(InvalidBranchSetting, self).__init__()
         self.expected_setting = expected_setting
         self.actual_setting = actual_setting
+
+    def __unicode__(self, *args, **kwargs):
+        return u"Invalid branch: expected {} but got {}".format(self.expected_setting, self.actual_setting)

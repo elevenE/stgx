@@ -1,6 +1,7 @@
 <%! from django.utils.translation import ugettext as _ %>
 <%! from django.core.urlresolvers import reverse %>
 <%! from django.conf import settings %>
+<%! from microsite_configuration import microsite %>
 
 <%inherit file="../main.html" />
 
@@ -22,7 +23,7 @@
   <section class="wrapper cart-list">
     <div class="wrapper-content-main">
       <article class="content-main">
-        <h1>${_(settings.PLATFORM_NAME + " (" + settings.SITE_NAME + ")" + " Electronic Receipt")}</h1>
+        <h1>${_("{platform_name} ({site_name}) Electronic Receipt").format(platform_name=microsite.get_value('platform_name', settings.PLATFORM_NAME), site_name=microsite.get_value('SITE_NAME', settings.SITE_NAME))}</h1>
         <hr />
 
         <table class="order-receipt">
@@ -86,16 +87,18 @@
             ${_("Note: items with strikethough like <del>this</del> have been refunded.")}
           </p>
         % endif
-
-        <h2>${_("Billed To:")}</h2>
-        <p>
-          ${order.bill_to_cardtype} ${_("#:")} ${order.bill_to_ccnum}<br />
-          ${order.bill_to_first} ${order.bill_to_last}<br />
-          ${order.bill_to_street1}<br />
-          ${order.bill_to_street2}<br />
-          ${order.bill_to_city}, ${order.bill_to_state} ${order.bill_to_postalcode}<br />
-          ${order.bill_to_country.upper()}<br />
-        </p>
+        % if order.total_cost > 0:
+            <h2>${_("Billed To:")}</h2>
+            <p>
+              ${order.bill_to_cardtype} ${_("#:")} ${order.bill_to_ccnum}<br />
+              ${order.bill_to_first} ${order.bill_to_last}<br />
+              ${order.bill_to_street1}<br />
+              ${order.bill_to_street2}<br />
+              ${order.bill_to_city}, ${order.bill_to_state} ${order.bill_to_postalcode}<br />
+              ${order.bill_to_country.upper()}<br />
+            </p>
+         % endif
+      </article>
     </div>
   </section>
 </div>

@@ -1,15 +1,18 @@
+import pprint
+import pymongo.message
+
 from factory import Factory, lazy_attribute_sequence, lazy_attribute
 from factory.containers import CyclicDefinitionError
 from uuid import uuid4
 
 from xmodule.modulestore import prefer_xmodules, ModuleStoreEnum
-from opaque_keys.edx.locations import Location
+from opaque_keys.edx.locations import Location, SlashSeparatedCourseKey
 from opaque_keys.edx.keys import UsageKey
 from xblock.core import XBlock
 from xmodule.tabs import StaticTab
 from decorator import contextmanager
 from mock import Mock, patch
-from nose.tools import assert_less_equal
+from nose.tools import assert_less_equal, assert_greater_equal, assert_equal
 
 
 class Dummy(object):
@@ -55,20 +58,14 @@ class CourseFactory(XModuleFactory):
         run = kwargs.get('run', name)
         user_id = kwargs.pop('user_id', ModuleStoreEnum.UserID.test)
 
-        location = Location(org, number, run, 'course', name)
-
         with store.branch_setting(ModuleStoreEnum.Branch.draft_preferred):
             # Write the data to the mongo datastore
-            new_course = store.create_xmodule(location, metadata=kwargs.get('metadata', None))
-
-            # The rest of kwargs become attributes on the course:
-            for k, v in kwargs.iteritems():
-                setattr(new_course, k, v)
-
-            # Save the attributes we just set
-            new_course.save()
-            # Update the data in the mongo datastore
-            store.update_item(new_course, user_id)
+            kwargs.update(kwargs.get('metadata', {}))
+            course_key = SlashSeparatedCourseKey(org, number, run)
+            # TODO - We really should call create_course here.  However, since create_course verifies there are no
+            # duplicates, this breaks several tests that do not clean up properly in between tests.
+            new_course = store.create_xblock(None, course_key, 'course', block_id=run, fields=kwargs)
+            store.update_item(new_course, user_id, allow_not_found=True)
             return new_course
 
 
@@ -174,7 +171,15 @@ class ItemFactory(XModuleFactory):
             if display_name is not None:
                 metadata['display_name'] = display_name
             runtime = parent.runtime if parent else None
-            store.create_and_save_xmodule(location, user_id, metadata=metadata, definition_data=data, runtime=runtime)
+            store.create_item(
+                user_id,
+                location.course_key,
+                location.block_type,
+                block_id=location.block_id,
+                metadata=metadata,
+                definition_data=data,
+                runtime=runtime
+            )
 
             module = store.get_item(location)
 
@@ -212,30 +217,83 @@ class ItemFactory(XModuleFactory):
 
 
 @contextmanager
-def check_mongo_calls(mongo_store, max_finds=0, max_sends=None):
+def check_exact_number_of_calls(object_with_method, method_name, num_calls):
+    """
+    Instruments the given method on the given object to verify the number of calls to the
+    method is exactly equal to 'num_calls'.
+    """
+    with check_number_of_calls(object_with_method, method_name, num_calls, num_calls):
+        yield
+
+
+def check_number_of_calls(object_with_method, method_name, maximum_calls, minimum_calls=1):
+    """
+    Instruments the given method on the given object to verify the number of calls to the method is
+    less than or equal to the expected maximum_calls and greater than or equal to the expected minimum_calls.
+    """
+    return check_sum_of_calls(object_with_method, [method_name], maximum_calls, minimum_calls)
+
+
+@contextmanager
+def check_sum_of_calls(object_, methods, maximum_calls, minimum_calls=1):
+    """
+    Instruments the given methods on the given object to verify that the total sum of calls made to the
+    methods falls between minumum_calls and maximum_calls.
+    """
+    mocks = {
+        method: Mock(wraps=getattr(object_, method))
+        for method in methods
+    }
+
+    with patch.multiple(object_, **mocks):
+        yield
+
+    call_count = sum(mock.call_count for mock in mocks.values())
+    calls = pprint.pformat({
+        method_name: mock.call_args_list
+        for method_name, mock in mocks.items()
+    })
+
+    # Assertion errors don't handle multi-line values, so pretty-print to std-out instead
+    if not minimum_calls <= call_count <= maximum_calls:
+        print "Expected between {} and {} calls, {} were made. Calls: {}".format(
+            minimum_calls,
+            maximum_calls,
+            call_count,
+            calls,
+        )
+
+    # verify the counter actually worked by ensuring we have counted greater than (or equal to) the minimum calls
+    assert_greater_equal(call_count, minimum_calls)
+
+    # now verify the number of actual calls is less than (or equal to) the expected maximum
+    assert_less_equal(call_count, maximum_calls)
+
+
+@contextmanager
+def check_mongo_calls(num_finds=0, num_sends=None):
     """
     Instruments the given store to count the number of calls to find (incl find_one) and the number
-    of calls to send_message which is for insert, update, and remove (if you provide max_sends). At the
-    end of the with statement, it compares the counts to the max_finds and max_sends using a simple
-    assertLessEqual.
+    of calls to send_message which is for insert, update, and remove (if you provide num_sends). At the
+    end of the with statement, it compares the counts to the num_finds and num_sends.
 
-    :param mongo_store: the MongoModulestore or subclass to watch
-    :param max_finds: the maximum number of find calls to allow
-    :param max_sends: If none, don't instrument the send calls. If non-none, count and compare to
+    :param num_finds: the exact number of find calls expected
+    :param num_sends: If none, don't instrument the send calls. If non-none, count and compare to
         the given int value.
     """
-    try:
-        find_wrap = Mock(wraps=mongo_store.collection.find)
-        wrap_patch = patch.object(mongo_store.collection, 'find', find_wrap)
-        wrap_patch.start()
-        if max_sends:
-            sends_wrap = Mock(wraps=mongo_store.database.connection._send_message)
-            sends_patch = patch.object(mongo_store.database.connection, '_send_message', sends_wrap)
-            sends_patch.start()
-        yield
-    finally:
-        wrap_patch.stop()
-        if max_sends:
-            sends_patch.stop()
-            assert_less_equal(sends_wrap.call_count, max_sends)
-        assert_less_equal(find_wrap.call_count, max_finds)
+    with check_sum_of_calls(
+        pymongo.message,
+        ['query', 'get_more'],
+        num_finds,
+        num_finds
+    ):
+        if num_sends is not None:
+            with check_sum_of_calls(
+                pymongo.message,
+                ['insert', 'update', 'delete'],
+                num_sends,
+                num_sends
+            ):
+                yield
+        else:
+            yield

@@ -18,9 +18,9 @@ class LegacyFieldMappingProcessor(object):
             for field in CONTEXT_FIELDS_TO_INCLUDE:
                 if field in context:
                     event[field] = context[field]
-                    del context[field]
                 else:
                     event[field] = ''
+            remove_shim_context(event)
 
         if 'event_type' in event.get('context', {}):
             event['event_type'] = event['context']['event_type']
@@ -40,3 +40,15 @@ class LegacyFieldMappingProcessor(object):
 
         event['event_source'] = 'server'
         event['page'] = None
+
+
+def remove_shim_context(event):
+    if 'context' in event:
+        context = event['context']
+        # These fields are present elsewhere in the event at this point
+        context_fields_to_remove = set(CONTEXT_FIELDS_TO_INCLUDE)
+        # This field is only used for Segment.io web analytics and does not concern researchers
+        context_fields_to_remove.add('client_id')
+        for field in context_fields_to_remove:
+            if field in context:
+                del context[field]

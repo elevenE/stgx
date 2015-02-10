@@ -3,15 +3,19 @@ Instructor Dashboard Views
 """
 
 import logging
+import datetime
+import uuid
+import pytz
 
+from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_POST
 from django.utils.translation import ugettext as _
 from django_future.csrf import ensure_csrf_cookie
 from django.views.decorators.cache import cache_control
 from edxmako.shortcuts import render_to_response
-from django.contrib.auth.models import User
 from django.core.urlresolvers import reverse
 from django.utils.html import escape
-from django.http import Http404
+from django.http import Http404, HttpResponse, HttpResponseNotFound
 from django.conf import settings
 
 from lms.lib.xblock.runtime import quote_slashes
@@ -22,19 +26,18 @@ from xmodule.modulestore.django import modulestore
 from xblock.field_data import DictFieldData
 from xblock.fields import ScopeIds
 from courseware.access import has_access
-from courseware.courses import get_course_by_id, get_cms_course_link, get_course_with_access
+from courseware.courses import get_course_by_id, get_cms_course_link
 from django_comment_client.utils import has_forum_access
 from django_comment_common.models import FORUM_ROLE_ADMINISTRATOR
 from student.models import CourseEnrollment
 from shoppingcart.models import Coupon, PaidCourseRegistration
-from course_modes.models import CourseMode
+from course_modes.models import CourseMode, CourseModesArchive
 from student.roles import CourseFinanceAdminRole
 
-from bulk_email.models import CourseAuthorization
 from class_dashboard.dashboard_data import get_section_display_name, get_array_section_has_problem
 
-from analyticsclient.client import RestClient, ClientError
-from analyticsclient.course import Course
+from analyticsclient.client import Client
+from analyticsclient.exceptions import ClientError
 
 from .tools import get_units_with_due_date, title_or_url, bulk_email_is_enabled_for_course
 from opaque_keys.edx.locations import SlashSeparatedCourseKey
@@ -92,16 +95,23 @@ def instructor_dashboard_2(request, course_id):
     if course_mode_has_price:
         sections.append(_section_e_commerce(course_key, access))
 
-
     studio_url = None
     if is_studio_course:
         studio_url = get_cms_course_link(course)
 
-    enrollment_count = sections[0]['enrollment_count']
+    enrollment_count = sections[0]['enrollment_count']['total']
     disable_buttons = False
     max_enrollment_for_buttons = settings.FEATURES.get("MAX_ENROLLMENT_INSTR_BUTTONS")
     if max_enrollment_for_buttons is not None:
         disable_buttons = enrollment_count > max_enrollment_for_buttons
+
+    analytics_dashboard_message = None
+    if settings.ANALYTICS_DASHBOARD_URL:
+        # Construct a URL to the external analytics dashboard
+        analytics_dashboard_url = '{0}/courses/{1}'.format(settings.ANALYTICS_DASHBOARD_URL, unicode(course_key))
+        link_start = "<a href=\"{}\" target=\"_blank\">".format(analytics_dashboard_url)
+        analytics_dashboard_message = _("To gain insights into student enrollment and participation, {link_start}visit the new dashboard for course analytics{link_end}.")
+        analytics_dashboard_message = analytics_dashboard_message.format(link_start=link_start, link_end="</a>")
 
     context = {
         'course': course,
@@ -109,6 +119,7 @@ def instructor_dashboard_2(request, course_id):
         'studio_url': studio_url,
         'sections': sections,
         'disable_buttons': disable_buttons,
+        'analytics_dashboard_message': analytics_dashboard_message
     }
 
     return render_to_response('instructor/instructor_dashboard_2/instructor_dashboard_2.html', context)
@@ -131,6 +142,10 @@ def _section_e_commerce(course_key, access):
     """ Provide data for the corresponding dashboard section """
     coupons = Coupon.objects.filter(course_id=course_key).order_by('-is_active')
     total_amount = None
+    course_price = None
+    course_honor_mode = CourseMode.mode_for_course(course_key, 'honor')
+    if course_honor_mode and course_honor_mode.min_price > 0:
+        course_price = course_honor_mode.min_price
     if access['finance_admin']:
         total_amount = PaidCourseRegistration.get_total_amount_of_purchased_item(course_key)
 
@@ -141,13 +156,56 @@ def _section_e_commerce(course_key, access):
         'course_id': course_key.to_deprecated_string(),
         'ajax_remove_coupon_url': reverse('remove_coupon', kwargs={'course_id': course_key.to_deprecated_string()}),
         'ajax_get_coupon_info': reverse('get_coupon_info', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'get_user_invoice_preference_url': reverse('get_user_invoice_preference', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'sale_validation_url': reverse('sale_validation', kwargs={'course_id': course_key.to_deprecated_string()}),
         'ajax_update_coupon': reverse('update_coupon', kwargs={'course_id': course_key.to_deprecated_string()}),
         'ajax_add_coupon': reverse('add_coupon', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'get_purchase_transaction_url': reverse('get_purchase_transaction', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'get_sale_records_url': reverse('get_sale_records', kwargs={'course_id': course_key.to_deprecated_string()}),
         'instructor_url': reverse('instructor_dashboard', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'get_registration_code_csv_url': reverse('get_registration_codes', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'generate_registration_code_csv_url': reverse('generate_registration_codes', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'active_registration_code_csv_url': reverse('active_registration_codes', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'spent_registration_code_csv_url': reverse('spent_registration_codes', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'set_course_mode_url': reverse('set_course_mode_price', kwargs={'course_id': course_key.to_deprecated_string()}),
+        'download_coupon_codes_url': reverse('get_coupon_codes', kwargs={'course_id': course_key.to_deprecated_string()}),
         'coupons': coupons,
         'total_amount': total_amount,
+        'course_price': course_price
     }
     return section_data
+
+
+@ensure_csrf_cookie
+@cache_control(no_cache=True, no_store=True, must_revalidate=True)
+@require_POST
+@login_required
+def set_course_mode_price(request, course_id):
+    """
+    set the new course price and add new entry in the CourseModesArchive Table
+    """
+    try:
+        course_price = int(request.POST['course_price'])
+    except ValueError:
+        return HttpResponseNotFound(_("Please Enter the numeric value for the course price"))
+    currency = request.POST['currency']
+    course_key = SlashSeparatedCourseKey.from_deprecated_string(course_id)
+
+    course_honor_mode = CourseMode.objects.filter(mode_slug='honor', course_id=course_key)
+    if not course_honor_mode:
+        return HttpResponseNotFound(
+            _("CourseMode with the mode slug({mode_slug}) DoesNotExist").format(mode_slug='honor')
+        )
+    CourseModesArchive.objects.create(
+        course_id=course_id, mode_slug='honor', mode_display_name='Honor Code Certificate',
+        min_price=getattr(course_honor_mode[0], 'min_price'), currency=getattr(course_honor_mode[0], 'currency'),
+        expiration_datetime=datetime.datetime.now(pytz.utc), expiration_date=datetime.date.today()
+    )
+    course_honor_mode.update(
+        min_price=course_price,
+        currency=currency
+    )
+    return HttpResponse(_("CourseMode price updated successfully"))
 
 
 def _section_course_info(course_key, access):
@@ -160,7 +218,7 @@ def _section_course_info(course_key, access):
         'access': access,
         'course_id': course_key,
         'course_display_name': course.display_name,
-        'enrollment_count': CourseEnrollment.num_enrolled_in(course_key),
+        'enrollment_count': CourseEnrollment.enrollment_counts(course_key),
         'has_started': course.has_started(),
         'has_ended': course.has_ended(),
         'list_instructor_tasks_url': reverse('list_instructor_tasks', kwargs={'course_id': course_key.to_deprecated_string()}),
@@ -254,6 +312,7 @@ def _section_data_download(course_key, access):
 
 def _section_send_email(course_key, access, course):
     """ Provide data for the corresponding bulk email section """
+    # This HtmlDescriptor is only being used to generate a nice text editor.
     html_module = HtmlDescriptor(
         course.system,
         DictFieldData({'data': ''}),
@@ -263,7 +322,10 @@ def _section_send_email(course_key, access, course):
     fragment = wrap_xblock(
         'LmsRuntime', html_module, 'studio_view', fragment, None,
         extra_data={"course-id": course_key.to_deprecated_string()},
-        usage_id_serializer=lambda usage_id: quote_slashes(usage_id.to_deprecated_string())
+        usage_id_serializer=lambda usage_id: quote_slashes(usage_id.to_deprecated_string()),
+        # Generate a new request_token here at random, because this module isn't connected to any other
+        # xblock rendering.
+        request_token=uuid.uuid1().get_hex()
     )
     email_editor = fragment.content
     section_data = {
@@ -278,6 +340,9 @@ def _section_send_email(course_key, access, course):
         'email_background_tasks_url': reverse(
             'list_background_email_tasks', kwargs={'course_id': course_key.to_deprecated_string()}
         ),
+        'email_content_history_url': reverse(
+            'list_email_content', kwargs={'course_id': course_key.to_deprecated_string()}
+        ),
     }
     return section_data
 
@@ -285,7 +350,7 @@ def _section_send_email(course_key, access, course):
 def _section_analytics(course_key, access):
     """ Provide data for the corresponding dashboard section """
     section_data = {
-        'section_key': 'analytics',
+        'section_key': 'instructor_analytics',
         'section_display_name': _('Analytics'),
         'access': access,
         'get_distribution_url': reverse('get_distribution', kwargs={'course_id': course_key.to_deprecated_string()}),
@@ -323,16 +388,17 @@ def _update_active_students(course_key, section_data):
     section_data['active_student_count_end'] = 'N/A'
 
     try:
-        client = RestClient(base_url=base_url, auth_token=auth_token)
-        course = Course(client, course_key.to_deprecated_string())
+        client = Client(base_url=base_url, auth_token=auth_token)
+        course = client.courses(unicode(course_key))
 
-        section_data['active_student_count'] = course.recent_active_user_count['count']
+        recent_activity = course.recent_activity()
+        section_data['active_student_count'] = recent_activity['count']
 
         def format_date(value):
             return value.split('T')[0]
 
-        start = course.recent_active_user_count['interval_start']
-        end = course.recent_active_user_count['interval_end']
+        start = recent_activity['interval_start']
+        end = recent_activity['interval_end']
 
         section_data['active_student_count_start'] = format_date(start)
         section_data['active_student_count_end'] = format_date(end)

@@ -7,6 +7,7 @@ import logging
 import re
 import json
 import datetime
+from uuid import uuid4
 
 from collections import namedtuple, defaultdict
 import collections
@@ -23,6 +24,7 @@ from opaque_keys import InvalidKeyError
 from opaque_keys.edx.locations import SlashSeparatedCourseKey
 from xblock.runtime import Mixologist
 from xblock.core import XBlock
+import functools
 
 log = logging.getLogger('edx.modulestore')
 
@@ -88,16 +90,6 @@ class ModuleStoreEnum(object):
         # user ID to use for tests that do not have a django user available
         test = -3
 
-class PublishState(object):
-    """
-    The publish state for a given xblock-- either 'draft', 'private', or 'public'.
-
-    Currently in CMS, an xblock can only be in 'draft' or 'private' if it is at or below the Unit level.
-    """
-    draft = 'draft'
-    private = 'private'
-    public = 'public'
-
 
 class ModuleStoreRead(object):
     """
@@ -115,7 +107,7 @@ class ModuleStoreRead(object):
         pass
 
     @abstractmethod
-    def get_item(self, usage_key, depth=0):
+    def get_item(self, usage_key, depth=0, **kwargs):
         """
         Returns an XModuleDescriptor instance for the item at location.
 
@@ -149,7 +141,7 @@ class ModuleStoreRead(object):
         pass
 
     @abstractmethod
-    def get_items(self, location, course_id=None, depth=0, qualifiers=None):
+    def get_items(self, location, course_id=None, depth=0, qualifiers=None, **kwargs):
         """
         Returns a list of XModuleDescriptor instances for the items
         that match location. Any element of location that is None is treated
@@ -227,7 +219,17 @@ class ModuleStoreRead(object):
             return criteria == target
 
     @abstractmethod
-    def get_courses(self):
+    def make_course_key(self, org, course, run):
+        """
+        Return a valid :class:`~opaque_keys.edx.keys.CourseKey` for this modulestore
+        that matches the supplied `org`, `course`, and `run`.
+
+        This key may represent a course that doesn't exist in this modulestore.
+        """
+        pass
+
+    @abstractmethod
+    def get_courses(self, **kwargs):
         '''
         Returns a list containing the top level XModuleDescriptors of the courses
         in this modulestore.
@@ -235,7 +237,7 @@ class ModuleStoreRead(object):
         pass
 
     @abstractmethod
-    def get_course(self, course_id, depth=0):
+    def get_course(self, course_id, depth=0, **kwargs):
         '''
         Look for a specific course by its id (:class:`CourseKey`).
         Returns the course descriptor, or None if not found.
@@ -243,7 +245,7 @@ class ModuleStoreRead(object):
         pass
 
     @abstractmethod
-    def has_course(self, course_id, ignore_case=False):
+    def has_course(self, course_id, ignore_case=False, **kwargs):
         '''
         Look for a specific course id.  Returns whether it exists.
         Args:
@@ -255,13 +257,14 @@ class ModuleStoreRead(object):
 
     @abstractmethod
     def get_parent_location(self, location, **kwargs):
-        '''Find the location that is the parent of this location in this
+        '''
+        Find the location that is the parent of this location in this
         course.  Needed for path_to_location().
         '''
         pass
 
     @abstractmethod
-    def get_orphans(self, course_key):
+    def get_orphans(self, course_key, **kwargs):
         """
         Get all of the xblocks in the given course which have no parents and are not of types which are
         usually orphaned. NOTE: may include xblocks which still have references via xblocks which don't
@@ -286,15 +289,18 @@ class ModuleStoreRead(object):
         pass
 
     @abstractmethod
-    def compute_publish_state(self, xblock):
+    def get_courses_for_wiki(self, wiki_slug, **kwargs):
         """
-        Returns whether this xblock is draft, public, or private.
+        Return the list of courses which use this wiki_slug
+        :param wiki_slug: the course wiki root slug
+        :return: list of course keys
+        """
+        pass
 
-        Returns:
-            PublishState.draft - content is in the process of being edited, but still has a previous
-                version deployed to LMS
-            PublishState.public - content is locked and deployed to LMS
-            PublishState.private - content is editable and not deployed to LMS
+    @abstractmethod
+    def has_published_version(self, xblock):
+        """
+        Returns true if this xblock exists in the published course regardless of whether it's up to date
         """
         pass
 
@@ -304,6 +310,13 @@ class ModuleStoreRead(object):
         Closes any open connections to the underlying databases
         """
         pass
+
+    @contextmanager
+    def bulk_operations(self, course_id):
+        """
+        A context manager for notifying the store of bulk operations. This affects only the current thread.
+        """
+        yield
 
 
 class ModuleStoreWrite(ModuleStoreRead):
@@ -315,7 +328,7 @@ class ModuleStoreWrite(ModuleStoreRead):
     __metaclass__ = ABCMeta
 
     @abstractmethod
-    def update_item(self, xblock, user_id, allow_not_found=False, force=False):
+    def update_item(self, xblock, user_id, allow_not_found=False, force=False, **kwargs):
         """
         Update the given xblock's persisted repr. Pass the user's unique id which the persistent store
         should save with the update if it has that ability.
@@ -367,7 +380,26 @@ class ModuleStoreWrite(ModuleStoreRead):
         pass
 
     @abstractmethod
-    def clone_course(self, source_course_id, dest_course_id, user_id):
+    def create_item(self, user_id, course_key, block_type, block_id=None, fields=None, **kwargs):
+        """
+        Creates and saves a new item in a course.
+
+        Returns the newly created item.
+
+        Args:
+            user_id: ID of the user creating and saving the xmodule
+            course_key: A :class:`~opaque_keys.edx.CourseKey` identifying which course to create
+                this item in
+            block_type: The type of block to create
+            block_id: a unique identifier for the new item. If not supplied,
+                a new identifier will be generated
+            fields (dict): A dictionary specifying initial values for some or all fields
+                in the newly created block
+        """
+        pass
+
+    @abstractmethod
+    def clone_course(self, source_course_id, dest_course_id, user_id, fields=None):
         """
         Sets up source_course_id to point a course with the same content as the desct_course_id. This
         operation may be cheap or expensive. It may have to copy all assets and all xblock content or
@@ -384,7 +416,7 @@ class ModuleStoreWrite(ModuleStoreRead):
         pass
 
     @abstractmethod
-    def delete_course(self, course_key, user_id):
+    def delete_course(self, course_key, user_id, **kwargs):
         """
         Deletes the course. It may be a soft or hard delete. It may or may not remove the xblock definitions
         depending on the persistence layer and how tightly bound the xblocks are to the course.
@@ -451,19 +483,19 @@ class ModuleStoreReadBase(ModuleStoreRead):
         """
         return {}
 
-    def get_course(self, course_id, depth=0):
+    def get_course(self, course_id, depth=0, **kwargs):
         """
         See ModuleStoreRead.get_course
 
         Default impl--linear search through course list
         """
         assert(isinstance(course_id, CourseKey))
-        for course in self.get_courses():
+        for course in self.get_courses(**kwargs):
             if course.id == course_id:
                 return course
         return None
 
-    def has_course(self, course_id, ignore_case=False):
+    def has_course(self, course_id, ignore_case=False, **kwargs):
         """
         Returns the course_id of the course if it was found, else None
         Args:
@@ -489,11 +521,11 @@ class ModuleStoreReadBase(ModuleStoreRead):
                 None
             )
 
-    def compute_publish_state(self, xblock):
+    def has_published_version(self, xblock):
         """
-        Returns PublishState.public since this is a read-only store.
+        Returns True since this is a read-only store.
         """
-        return PublishState.public
+        return True
 
     def heartbeat(self):
         """
@@ -520,17 +552,70 @@ class ModuleStoreReadBase(ModuleStoreRead):
         yield
 
     @contextmanager
-    def branch_setting(self, branch_setting, course_id=None):
+    def bulk_operations(self, course_id):
         """
-        A context manager for temporarily setting a store's branch value
+        A context manager for notifying the store of bulk operations. This affects only the current thread.
+
+        In the case of Mongo, it temporarily disables refreshing the metadata inheritance tree
+        until the bulk operation is completed.
         """
-        previous_branch_setting_func = getattr(self, 'branch_setting_func', None)
+        # TODO: Make this multi-process-safe if future operations need it.
         try:
-            self.branch_setting_func = lambda: branch_setting
+            self._begin_bulk_operation(course_id)
             yield
         finally:
-            self.branch_setting_func = previous_branch_setting_func
+            self._end_bulk_operation(course_id)
 
+    @contextmanager
+    def bulk_temp_noop_operations(self, course_id):
+        """
+        A hotfix noop b/c old mongo does not properly handle nested bulk operations and does unnecessary work
+        if the bulk operation only reads data. Replace with bulk_operations once fixed (or don't merge to master)
+        """
+        yield
+
+    def _begin_bulk_operation(self, course_id):
+        """
+        Begin a bulk write operation on course_id.
+        """
+        pass
+
+    def _end_bulk_operation(self, course_id):
+        """
+        End the active bulk write operation on course_id.
+        """
+        pass
+
+    @staticmethod
+    def memoize_request_cache(func):
+        """
+        Memoize a function call results on the request_cache if there's one. Creates the cache key by
+        joining the unicode of all the args with &; so, if your arg may use the default &, it may
+        have false hits
+        """
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            if self.request_cache:
+                cache_key = '&'.join([hashvalue(arg) for arg in args])
+                if cache_key in self.request_cache.data.setdefault(func.__name__, {}):
+                    return self.request_cache.data[func.__name__][cache_key]
+
+                result = func(self, *args, **kwargs)
+
+                self.request_cache.data[func.__name__][cache_key] = result
+                return result
+            else:
+                return func(self, *args, **kwargs)
+        return wrapper
+
+def hashvalue(arg):
+    """
+    If arg is an xblock, use its location. otherwise just turn it into a string
+    """
+    if isinstance(arg, XBlock):
+        return unicode(arg.location)
+    else:
+        return unicode(arg)
 
 class ModuleStoreWriteBase(ModuleStoreReadBase, ModuleStoreWrite):
     '''
@@ -551,60 +636,37 @@ class ModuleStoreWriteBase(ModuleStoreReadBase, ModuleStoreWrite):
         :param category: the xblock category
         :param fields: the dictionary of {fieldname: value}
         """
-        if fields is None:
-            return {}
-        cls = self.mixologist.mix(XBlock.load_class(category, select=prefer_xmodules))
         result = collections.defaultdict(dict)
+        if fields is None:
+            return result
+        cls = self.mixologist.mix(XBlock.load_class(category, select=prefer_xmodules))
         for field_name, value in fields.iteritems():
             field = getattr(cls, field_name)
             result[field.scope][field_name] = value
         return result
 
-    def update_item(self, xblock, user_id, allow_not_found=False, force=False):
+    def create_course(self, org, course, run, user_id, fields=None, runtime=None, **kwargs):
         """
-        Update the given xblock's persisted repr. Pass the user's unique id which the persistent store
-        should save with the update if it has that ability.
-
-        :param allow_not_found: whether this method should raise an exception if the given xblock
-        has not been persisted before.
-        :param force: fork the structure and don't update the course draftVersion if there's a version
-        conflict (only applicable to version tracking and conflict detecting persistence stores)
-
-        :raises VersionConflictError: if org, course, run, and version_guid given and the current
-        version head != version_guid and force is not True. (only applicable to version tracking stores)
+        Creates any necessary other things for the course as a side effect and doesn't return
+        anything useful. The real subclass should call this before it returns the course.
         """
-        raise NotImplementedError
+        # clone a default 'about' overview module as well
+        about_location = self.make_course_key(org, course, run).make_usage_key('about', 'overview')
 
-    def delete_item(self, location, user_id, force=False):
-        """
-        Delete an item from persistence. Pass the user's unique id which the persistent store
-        should save with the update if it has that ability.
+        about_descriptor = XBlock.load_class('about')
+        overview_template = about_descriptor.get_template('overview.yaml')
+        self.create_item(
+            user_id,
+            about_location.course_key,
+            about_location.block_type,
+            block_id=about_location.block_id,
+            definition_data={'data': overview_template.get('data')},
+            metadata=overview_template.get('metadata'),
+            runtime=runtime,
+            continue_version=True,
+        )
 
-        :param user_id: ID of the user deleting the item
-        :param force: fork the structure and don't update the course draftVersion if there's a version
-        conflict (only applicable to version tracking and conflict detecting persistence stores)
-
-        :raises VersionConflictError: if org, course, run, and version_guid given and the current
-        version head != version_guid and force is not True. (only applicable to version tracking stores)
-        """
-        raise NotImplementedError
-
-    def create_and_save_xmodule(self, location, user_id, definition_data=None, metadata=None, runtime=None, fields={}):
-        """
-        Create the new xmodule and save it.
-
-        :param location: a Location--must have a category
-        :param user_id: ID of the user creating and saving the xmodule
-        :param definition_data: can be empty. The initial definition_data for the kvs
-        :param metadata: can be empty, the initial metadata for the kvs
-        :param runtime: if you already have an xblock from the course, the xblock.runtime value
-        :param fields: a dictionary of field names and values for the new xmodule
-        """
-        new_object = self.create_xmodule(location, definition_data, metadata, runtime, fields)
-        self.update_item(new_object, user_id, allow_not_found=True)
-        return new_object
-
-    def clone_course(self, source_course_id, dest_course_id, user_id):
+    def clone_course(self, source_course_id, dest_course_id, user_id, fields=None, **kwargs):
         """
         This base method just copies the assets. The lower level impls must do the actual cloning of
         content.
@@ -612,10 +674,9 @@ class ModuleStoreWriteBase(ModuleStoreReadBase, ModuleStoreWrite):
         # copy the assets
         if self.contentstore:
             self.contentstore.copy_all_course_assets(source_course_id, dest_course_id)
-            super(ModuleStoreWriteBase, self).clone_course(source_course_id, dest_course_id, user_id)
         return dest_course_id
 
-    def delete_course(self, course_key, user_id):
+    def delete_course(self, course_key, user_id, **kwargs):
         """
         This base method just deletes the assets. The lower level impls must do the actual deleting of
         content.
@@ -634,28 +695,26 @@ class ModuleStoreWriteBase(ModuleStoreReadBase, ModuleStoreWrite):
             self.contentstore._drop_database()  # pylint: disable=protected-access
         super(ModuleStoreWriteBase, self)._drop_database()  # pylint: disable=protected-access
 
-    @contextmanager
-    def bulk_write_operations(self, course_id):
+    def create_child(self, user_id, parent_usage_key, block_type, block_id=None, fields=None, **kwargs):
         """
-        A context manager for notifying the store of bulk write events.
+        Creates and saves a new xblock that as a child of the specified block
 
-        In the case of Mongo, it temporarily disables refreshing the metadata inheritance tree
-        until the bulk operation is completed.
+        Returns the newly created item.
+
+        Args:
+            user_id: ID of the user creating and saving the xmodule
+            parent_usage_key: a :class:`~opaque_key.edx.UsageKey` identifing the
+                block that this item should be parented under
+            block_type: The type of block to create
+            block_id: a unique identifier for the new item. If not supplied,
+                a new identifier will be generated
+            fields (dict): A dictionary specifying initial values for some or all fields
+                in the newly created block
         """
-        # TODO
-        # Make this multi-process-safe if future operations need it.
-        # Right now, only Import Course, Clone Course, and Delete Course use this, so
-        # it's ok if the cached metadata in the memcache is invalid when another
-        # request comes in for the same course.
-        try:
-            if hasattr(self, '_begin_bulk_write_operation'):
-                self._begin_bulk_write_operation(course_id)
-            yield
-        finally:
-            # check for the begin method here,
-            # since it's an error if an end method is not defined when a begin method is
-            if hasattr(self, '_begin_bulk_write_operation'):
-                self._end_bulk_write_operation(course_id)
+        item = self.create_item(user_id, parent_usage_key.course_key, block_type, block_id=block_id, fields=fields, **kwargs)
+        parent = self.get_item(parent_usage_key)
+        parent.children.append(item.location)
+        self.update_item(parent, user_id)
 
 
 def only_xmodules(identifier, entry_points):
@@ -682,8 +741,8 @@ class EdxJSONEncoder(json.JSONEncoder):
     ISO date strings
     """
     def default(self, obj):
-        if isinstance(obj, Location):
-            return obj.to_deprecated_string()
+        if isinstance(obj, (CourseKey, UsageKey)):
+            return unicode(obj)
         elif isinstance(obj, datetime.datetime):
             if obj.tzinfo is not None:
                 if obj.utcoffset() is None:

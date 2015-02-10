@@ -2,7 +2,10 @@
 Tests for discussion pages
 """
 
+import datetime
+from pytz import UTC
 from uuid import uuid4
+from nose.plugins.attrib import attr
 
 from .helpers import UniqueCourseTest
 from ..pages.lms.auto_auth import AutoAuthPage
@@ -122,6 +125,7 @@ class DiscussionResponsePaginationTestMixin(object):
         self.assertFalse(self.thread_page.has_add_response_button())
 
 
+@attr('shard_1')
 class DiscussionTabSingleThreadTest(UniqueCourseTest, DiscussionResponsePaginationTestMixin):
     """
     Tests for the discussion page displaying a single thread
@@ -140,7 +144,29 @@ class DiscussionTabSingleThreadTest(UniqueCourseTest, DiscussionResponsePaginati
         self.thread_page = DiscussionTabSingleThreadPage(self.browser, self.course_id, thread_id)  # pylint:disable=W0201
         self.thread_page.visit()
 
+    def test_marked_answer_comments(self):
+        thread_id = "test_thread_{}".format(uuid4().hex)
+        response_id = "test_response_{}".format(uuid4().hex)
+        comment_id = "test_comment_{}".format(uuid4().hex)
+        thread_fixture = SingleThreadViewFixture(
+            Thread(id=thread_id, commentable_id=self.discussion_id, thread_type="question")
+        )
+        thread_fixture.addResponse(
+            Response(id=response_id, endorsed=True),
+            [Comment(id=comment_id)]
+        )
+        thread_fixture.push()
+        self.setup_thread_page(thread_id)
+        self.assertFalse(self.thread_page.is_comment_visible(comment_id))
+        self.assertFalse(self.thread_page.is_add_comment_visible(response_id))
+        self.assertTrue(self.thread_page.is_show_comments_visible(response_id))
+        self.thread_page.show_comments(response_id)
+        self.assertTrue(self.thread_page.is_comment_visible(comment_id))
+        self.assertTrue(self.thread_page.is_add_comment_visible(response_id))
+        self.assertFalse(self.thread_page.is_show_comments_visible(response_id))
 
+
+@attr('shard_1')
 class DiscussionCommentDeletionTest(UniqueCourseTest):
     """
     Tests for deleting comments displayed beneath responses in the single thread view.
@@ -184,6 +210,7 @@ class DiscussionCommentDeletionTest(UniqueCourseTest):
         page.delete_comment("comment_other_author")
 
 
+@attr('shard_1')
 class DiscussionCommentEditTest(UniqueCourseTest):
     """
     Tests for editing comments displayed beneath responses in the single thread view.
@@ -273,6 +300,7 @@ class DiscussionCommentEditTest(UniqueCourseTest):
         self.assertTrue(page.is_add_comment_visible("response1"))
 
 
+@attr('shard_1')
 class InlineDiscussionTest(UniqueCourseTest, DiscussionResponsePaginationTestMixin):
     """
     Tests for inline discussions
@@ -281,7 +309,7 @@ class InlineDiscussionTest(UniqueCourseTest, DiscussionResponsePaginationTestMix
     def setUp(self):
         super(InlineDiscussionTest, self).setUp()
         self.discussion_id = "test_discussion_{}".format(uuid4().hex)
-        CourseFixture(**self.course_info).add_children(
+        self.course_fix = CourseFixture(**self.course_info).add_children(
             XBlockFixtureDesc("chapter", "Test Section").add_children(
                 XBlockFixtureDesc("sequential", "Test Subsection").add_children(
                     XBlockFixtureDesc("vertical", "Test Unit").add_children(
@@ -295,7 +323,7 @@ class InlineDiscussionTest(UniqueCourseTest, DiscussionResponsePaginationTestMix
             )
         ).install()
 
-        AutoAuthPage(self.browser, course_id=self.course_id).visit()
+        self.user_id = AutoAuthPage(self.browser, course_id=self.course_id).visit().get_user_id()
 
         self.courseware_page = CoursewarePage(self.browser, self.course_id)
         self.courseware_page.visit()
@@ -329,7 +357,40 @@ class InlineDiscussionTest(UniqueCourseTest, DiscussionResponsePaginationTestMix
     def test_anonymous_to_peers_threads_as_peer(self):
         self.check_anonymous_to_peers(False)
 
+    def test_discussion_blackout_period(self):
+        now = datetime.datetime.now(UTC)
+        self.course_fix.add_advanced_settings(
+            {
+                u"discussion_blackouts": {
+                    "value": [
+                        [
+                            (now - datetime.timedelta(days=14)).isoformat(),
+                            (now + datetime.timedelta(days=2)).isoformat()
+                        ]
+                    ]
+                }
+            }
+        )
+        self.course_fix._add_advanced_settings()
+        self.browser.refresh()
+        thread = Thread(id=uuid4().hex, commentable_id=self.discussion_id)
+        thread_fixture = SingleThreadViewFixture(thread)
+        thread_fixture.addResponse(
+            Response(id="response1"),
+            [Comment(id="comment1", user_id="other"), Comment(id="comment2", user_id=self.user_id)])
+        thread_fixture.push()
+        self.setup_thread_page(thread.get("id"))
+        self.assertFalse(self.discussion_page.element_exists(".new-post-btn"))
+        self.assertFalse(self.thread_page.has_add_response_button())
+        self.assertFalse(self.thread_page.is_response_editable("response1"))
+        self.assertFalse(self.thread_page.is_add_comment_visible("response1"))
+        self.assertFalse(self.thread_page.is_comment_editable("comment1"))
+        self.assertFalse(self.thread_page.is_comment_editable("comment2"))
+        self.assertFalse(self.thread_page.is_comment_deletable("comment1"))
+        self.assertFalse(self.thread_page.is_comment_deletable("comment2"))
 
+
+@attr('shard_1')
 class DiscussionUserProfileTest(UniqueCourseTest):
     """
     Tests for user profile page in discussion tab.
@@ -343,8 +404,8 @@ class DiscussionUserProfileTest(UniqueCourseTest):
         CourseFixture(**self.course_info).install()
         # The following line creates a user enrolled in our course, whose
         # threads will be viewed, but not the one who will view the page.
-        # It isn't necessary to log them in, but using the AutoAuthPage 
-        # saves a lot of code.   
+        # It isn't necessary to log them in, but using the AutoAuthPage
+        # saves a lot of code.
         self.profiled_user_id = AutoAuthPage(
             self.browser,
             username=self.PROFILED_USERNAME,
@@ -374,7 +435,7 @@ class DiscussionUserProfileTest(UniqueCourseTest):
         all_pages = range(1, total_pages + 1)
 
         def _check_page():
-            # ensure the page being displayed as "current" is the expected one 
+            # ensure the page being displayed as "current" is the expected one
             self.assertEqual(page.get_current_page(), current_page)
             # ensure the expected threads are being shown in the right order
             threads_expected = threads[(current_page - 1) * self.PAGE_SIZE:current_page * self.PAGE_SIZE]
@@ -432,6 +493,8 @@ class DiscussionUserProfileTest(UniqueCourseTest):
     def test_151_threads(self):
         self.check_pages(151)
 
+
+@attr('shard_1')
 class DiscussionSearchAlertTest(UniqueCourseTest):
     """
     Tests for spawning and dismissing alerts related to user search actions and their results.
@@ -505,6 +568,7 @@ class DiscussionSearchAlertTest(UniqueCourseTest):
         ).wait_for_page()
 
 
+@attr('shard_1')
 class DiscussionSortPreferenceTest(UniqueCourseTest):
     """
     Tests for the discussion page displaying a single thread.
