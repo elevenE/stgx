@@ -89,9 +89,10 @@ class TestLTI(BaseTestXmodule):
             'module_score': None,
             'comment': u'',
             'weight': 1.0,
-            'request_username': self.item_descriptor.request_username,
-            'request_email': self.item_descriptor.request_email,
-            'text_box': self.item_descriptor.text_box,
+            'ask_to_send_username': self.item_descriptor.ask_to_send_username,
+            'ask_to_send_email': self.item_descriptor.ask_to_send_email,
+            'description': self.item_descriptor.description,
+            'button_text': self.item_descriptor.button_text,
         }
 
         def mocked_sign(self, *args, **kwargs):
