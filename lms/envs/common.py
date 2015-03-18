@@ -633,7 +633,7 @@ STATICFILES_DIRS = [
 FAVICON_PATH = 'images/favicon.ico'
 
 # Locale/Internationalization
-TIME_ZONE = 'America/New_York'  # http://en.wikipedia.org/wiki/List_of_tz_zones_by_name
+TIME_ZONE = 'America/Grenada'  # http://en.wikipedia.org/wiki/List_of_tz_zones_by_name
 LANGUAGE_CODE = 'en'  # http://www.i18nguy.com/unicode/language-identifiers.html
 
 # Sourced from http://www.localeplanet.com/icu/ and wikipedia
@@ -1499,7 +1499,7 @@ MAX_FAILED_LOGIN_ATTEMPTS_LOCKOUT_PERIOD_SECS = 15 * 60
 
 
 ##### LMS DEADLINE DISPLAY TIME_ZONE #######
-TIME_ZONE_DISPLAYED_FOR_DEADLINES = 'UTC'
+TIME_ZONE_DISPLAYED_FOR_DEADLINES = 'America/Grenada'
 
 
 # Source:
