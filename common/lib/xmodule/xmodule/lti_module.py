@@ -570,8 +570,8 @@ class LTIModule(LTIFields, LTI20ModuleMixin, XModule):
                 u'lis_outcome_service_url': self.get_outcome_service_url()
             })
 
-        self.user_email = "staff@example.com"
-        self.user_username = "staff"
+        self.user_email = ""
+        self.user_username = ""
 
         # Username and email can't be sent in studio mode, because the user object is not defined.
         # To test functionality test in LMS
