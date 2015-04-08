@@ -12,7 +12,6 @@ not possible to have this LTI multiple times on a single page in LMS.
 from uuid import uuid4
 import textwrap
 import urllib
-import re
 from oauthlib.oauth1.rfc5849 import signature, parameters
 import oauthlib.oauth1
 import hashlib
@@ -20,6 +19,7 @@ import base64
 import mock
 import requests
 from http import StubHttpRequestHandler, StubHttpService
+
 
 class StubLtiHandler(StubHttpRequestHandler):
     """
@@ -123,7 +123,7 @@ class StubLtiHandler(StubHttpRequestHandler):
             'Content-Type': 'application/xml',
             'X-Requested-With': 'XMLHttpRequest',
             'Authorization': self._oauth_sign(url, data)
-            }
+        }
 
         # Send request ignoring verifirecation of SSL certificate
         response = requests.post(url, data=data, headers=headers, verify=False)
